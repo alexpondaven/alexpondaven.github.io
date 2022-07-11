@@ -12,7 +12,7 @@
 # Development instructions
 - Open Ruby shell
 - go to repo directory
-- run: `bundle exec jekyll serve'
+- run: `bundle exec jekyll serve`
 
 A simple, clean, and responsive [Jekyll](https://jekyllrb.com/) theme for academics.
 If you like the theme, give it a star!
