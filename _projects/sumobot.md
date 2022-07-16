@@ -27,6 +27,4 @@ Took part in the SumoBot competition held by Imperial
 </div>
 
 Competition video:
-<iframe width="420" height="315"
-src="https://www.youtube.com/watch?v=dPwyhKY_rVM&ab_channel=ICRobotics">
-</iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/dPwyhKY_rVM" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
