@@ -20,6 +20,8 @@ https://github.com/alshedivat/al-folio/pull/261/files
 https://github.com/alshedivat/al-folio/issues/713
 https://github.com/alshedivat/al-folio/issues/529
 
+Note: Don't need to create source branch, just set Pages branch to gh-pages
+
 A simple, clean, and responsive [Jekyll](https://jekyllrb.com/) theme for academics.
 If you like the theme, give it a star!
 

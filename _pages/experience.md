@@ -19,6 +19,7 @@ nav_order: 1
   <ul>
   <li> 2nd Year Dean's List </li>
   <li> Year 2 Total: 77%  | Year 1 Total: 73% </li>
+  <li> Relevant Modules: Machine Learning, Deep Learning, Computer Vision, AI, Operations Research, Robotic Manipulation, High Level Programming </li>
   
   </ul>
 <li>2017 - 2019: <b>International Baccalaureate Diploma</b> at Whitgift School</li>
@@ -50,5 +51,6 @@ nav_order: 1
 <li> Convolutional Neural Processes for Inpainting Satellite Images - 7 June 2022. CSML Reading Group, Imperial College London. <a href="/assets/pdf/CSML_LANDSAT7_Inpainting.pdf" target="_blank">[Slides]</a> </li>
 </ul>
 
+<h2><a href="/assets/pdf/CV_Alexander_Pondaven_site.pdf" target="_blank">CV</a></h2>
 
 </div>

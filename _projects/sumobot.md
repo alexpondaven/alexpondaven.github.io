@@ -3,7 +3,7 @@ layout: page
 title: SumoBot competition
 description: Created sumobot robot to knock another robot out of the arena
 img: assets/img/sumobot/pagoda.jpg
-importance: 2
+importance: 3
 category: robotics
 ---
 
