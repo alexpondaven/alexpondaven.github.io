@@ -14,6 +14,12 @@
 - go to repo directory
 - run: `bundle exec jekyll serve`
 
+# Debug deployment links
+https://github.com/alshedivat/al-folio/issues/209
+https://github.com/alshedivat/al-folio/pull/261/files
+https://github.com/alshedivat/al-folio/issues/713
+https://github.com/alshedivat/al-folio/issues/529
+
 A simple, clean, and responsive [Jekyll](https://jekyllrb.com/) theme for academics.
 If you like the theme, give it a star!
 
