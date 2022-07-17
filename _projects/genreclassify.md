@@ -15,7 +15,7 @@ This project involved classifying the genre of piece of music just based on the 
 
 It was interesting to apply Convolutional Neural Networks, which are usually applied to image data, to spectrograms of music (plotting frequency against time). This could extract spatial patterns from another type of data and I liked how different ML algorithms from one field can be applied to many different fields.
 
-The CNN model was used to classify music live while it was being played into a mic. The <a href="https://github.com/alexpondaven/Music-Genre-Classification">script</a> takes the last 3 seconds of recorded audio, runs through the CNN classifier to get a probability distribution over the music genres and plots results on a histogram. It is quite fun to play around with and see how it classifies genre just from a small section of audio, so please check it out!
+The CNN model was used to classify music live while it was being played into a mic. The <a href="https://github.com/alexpondaven/Music-Genre-Classification/blob/main/genre_classify_mic.py">script</a> takes the last 3 seconds of recorded audio, runs through the CNN classifier to get a probability distribution over the music genres and plots results on a histogram. It is quite fun to play around with and see how it classifies genre just from a small section of audio, so please check it out!
 
 <div class="row">
     <div class="col-sm mt-3 mt-md-0">
