@@ -18,7 +18,7 @@ I am a 3rd year Electronic and Information Engineering (computer engineering) st
 
 **Research:** Over the last year, I've been working on a research problem involving inpainting satellite images within a meta-learning framework. See the project page and [paper under review](https://arxiv.org/abs/2205.12407). I've been working with a great team of other Imperial students supervised by [Harrison Zhu](https://harrisonzhu508.github.io/).
 
-**Experience:** I was a software engineering intern at MathWorks, where I worked on the [MATLAB Deep Learning Toolbox](https://uk.mathworks.com/products/deep-learning.html). I developed a video action recognition classifier implementation based on a research paper and enhanced pooling layers to allow spatiotemporal operations.
+**Experience:** I was a software engineering intern at MathWorks, where I worked on the [MATLAB Deep Learning Toolbox](https://uk.mathworks.com/products/deep-learning.html). I developed a video action recognition classifier based on a research paper and enhanced pooling layers to allow spatiotemporal operations.
 
 My current placement has involved work on implementing active learning approaches and deploying automated data ingestion pipelines using AWS.
 
