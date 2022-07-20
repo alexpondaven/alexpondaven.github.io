@@ -7,7 +7,7 @@ importance: 1
 category: machine learning
 ---
 
-Over most of the last year, I have led a team of other Imperial students on this research project, which takes a new approach to inpainting satellite images. It was first proposed by <a href="https://harrisonzhu508.github.io/">Harison Zhu</a> and I found out about it through the Imperial College Data Science Society (ICDSS). The first few months involved learning about the problem, collecting the satellite images using Google Earth Engine and learning about the architecture of neural processes/meta-learning framework.
+Over most of the last year, I have led a team of other Imperial students on this research project, which takes a new approach to inpainting satellite images. It was first proposed by <a href="https://harrisonzhu508.github.io/">Harrison Zhu</a> and I found out about it through the Imperial College Data Science Society (ICDSS). The first few months involved learning about the problem, collecting the satellite images using Google Earth Engine and learning about the architecture of neural processes/meta-learning framework.
 
 
 <div class="row">
