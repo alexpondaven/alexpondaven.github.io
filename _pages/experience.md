@@ -17,8 +17,8 @@ nav_order: 1
 <ul>
 <li>Sept 2019 - Jun 2023: <b>MEng Electronic and Information Engineering</b> at Imperial College London </li>
   <ul>
-  <li> 2nd Year Dean's List </li>
-  <li> Year 2 Total: 77%  | Year 1 Total: 73% </li>
+  <li> Dean's List Year 2 and 3 </li>
+  <li> Year 3 Total: 81% | Year 2 Total: 77%  | Year 1 Total: 73% </li>
   <li> Relevant Modules: Machine Learning, Deep Learning, Computer Vision, AI, Operations Research, Robotic Manipulation, High Level Programming </li>
   
   </ul>
@@ -33,10 +33,12 @@ nav_order: 1
 
 <h2>Work Experience</h2>
 <ul>
-<li>April 2022 - Present: <b>Computer Vision Intern</b> at Humanising Autonomy</li>
+<li>April - September 2022: <b>Computer Vision Intern</b> at Humanising Autonomy</li>
   <ul>
   <li> Implemented active learning approaches for training object detection models </li>
   <li> Automated data pipeline with AWS </li>
+  <li> Improved tracking performance of object detection, writing product-quality and unit-tested Python code </li>
+  <li> Developed reproducible way of creating demos on the edge of object detection systems </li>
   </ul>
 <li>June - October 2021: <b>Deep Learning Software Engineering Intern</b> at MathWorks </li>
   <ul>
@@ -51,6 +53,6 @@ nav_order: 1
 <li> Convolutional Neural Processes for Inpainting Satellite Images - 7 June 2022. CSML Reading Group, Imperial College London. <a href="/assets/pdf/CSML_LANDSAT7_Inpainting.pdf" target="_blank">[Slides]</a> </li>
 </ul>
 
-<h2><a href="/assets/pdf/CV_Alexander_Pondaven_site.pdf" target="_blank">CV</a></h2>
+<!-- <h2><a href="/assets/pdf/CV_Alexander_Pondaven_site.pdf" target="_blank">CV</a></h2> -->
 
 </div>
