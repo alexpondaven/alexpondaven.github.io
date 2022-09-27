@@ -15,7 +15,7 @@ nav_order: 1
 
 <h2>Education</h2>
 <ul>
-<li>Sept 2019 - Jun 2023: <b>MEng Electronic and Information Engineering</b> at Imperial College London </li>
+<li>September 2019 - June 2023: <b>MEng Electronic and Information Engineering</b> at Imperial College London </li>
   <ul>
   <li> Dean's List Year 2 and 3 </li>
   <li> Year 3 Total: 81% | Year 2 Total: 77%  | Year 1 Total: 73% </li>
