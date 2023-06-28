@@ -14,6 +14,9 @@
 - go to repo directory
 - run: `bundle exec jekyll serve`
 
+# Useful links
+- https://kramdown.gettalong.org/documentation.html
+
 # Debug deployment links
 https://github.com/alshedivat/al-folio/issues/209
 https://github.com/alshedivat/al-folio/pull/261/files

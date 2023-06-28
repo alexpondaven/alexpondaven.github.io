@@ -3,7 +3,7 @@ layout: page
 title: Music Genre Classification
 description: Predicting the genre of music from raw audio
 img: assets/img/genreclassify/freq.jpg
-importance: 2
+importance: 3
 category: machine learning
 ---
 
