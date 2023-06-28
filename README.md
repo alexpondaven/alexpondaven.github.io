@@ -14,6 +14,8 @@
 - go to repo directory
 - run: `bundle exec jekyll serve`
 
+Remember to add and commit on Windows.
+
 # Useful links
 - https://kramdown.gettalong.org/documentation.html
 
