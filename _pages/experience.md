@@ -19,7 +19,7 @@ nav_order: 1
   <ul>
   <li> Dean's List Year 2 and 3 </li>
   <li> Year 3 Total: 81% | Year 2 Total: 77%  | Year 1 Total: 73% </li>
-  <li> Relevant Modules: Machine Learning, Deep Learning, Probabilistic Inference, AI, Computer Vision and Pattern Recognition, Self Organising Multi Agent Systems, Robotic Manipulation </li>
+  <li> Relevant Modules: Machine Learning, Deep Learning, Computer Vision, AI, Operations Research, Robotic Manipulation, High Level Programming </li>
   
   </ul>
 <li>2017 - 2019: <b>International Baccalaureate Diploma</b> at Whitgift School</li>
