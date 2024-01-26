@@ -17,8 +17,9 @@ nav_order: 1
 <ul>
 <li>September 2019 - June 2023: <b>MEng Electronic and Information Engineering</b> at Imperial College London </li>
   <ul>
-  <li> Dean's List Year 2 and 3 </li>
-  <li> Year 3 Total: 81% | Year 2 Total: 77%  | Year 1 Total: 73% </li>
+  <li> Governors' MEng Prize in Electronic & Information Engineering </li>
+  <li> Dean's List Year 2, 3, 4 </li>
+  <li> First Class Honours - Programme total: 80.2% </li>
   <li> Relevant Modules: Machine Learning, Deep Learning, Probabilistic Inference, AI, Computer Vision and Pattern Recognition, Self Organising Multi Agent Systems, Robotic Manipulation </li>
   
   </ul>
@@ -56,6 +57,7 @@ nav_order: 1
 <h2>Reviewing Experience</h2>
 <ul>
 <li> Reviewer for ICLR 2023 Workshop: Tackling Climate Change with Machine Learning <a href="https://www.climatechange.ai/events/iclr2023" target="_blank">[Site]</a> </li>
+<li> Reviewer for NeurIPS 2023 Workshop: Tackling Climate Change with Machine Learning <a href="https://nips.cc/virtual/2023/workshop/66543" target="_blank">[Site]</a> </li>
 </ul>
 
 <!-- <h2><a href="/assets/pdf/CV_Alexander_Pondaven_site.pdf" target="_blank">CV</a></h2> -->
