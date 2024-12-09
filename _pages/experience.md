@@ -13,51 +13,42 @@ nav_order: 1
   {% bibliography -f papers -q @*[year={{y}}]* %}
 {% endfor %} -->
 
-<h2>Education</h2>
+<h2>🎓 Education</h2>
 <ul>
-<li>September 2019 - June 2023: <b>MEng Electronic and Information Engineering</b> at Imperial College London </li>
+<li><b>MEng Electronic and Information Engineering</b>, Imperial College London (2019-2023)</li>
   <ul>
-  <li> Governors' MEng Prize in Electronic & Information Engineering </li>
-  <li> Dean's List Year 2, 3, 4 </li>
-  <li> First Class Honours - Programme total: 80.2% </li>
-  <li> Relevant Modules: Machine Learning, Deep Learning, Probabilistic Inference, AI, Computer Vision and Pattern Recognition, Self Organising Multi Agent Systems, Robotic Manipulation </li>
-  
+  <li>First Class Honours (80.2%) | Governors' MEng Prize | Dean's List (Years 2-4)</li>
+  <li>Focus: Machine Learning, Deep Learning, Computer Vision, AI, Robotics</li>
   </ul>
-<li>2017 - 2019: <b>International Baccalaureate Diploma</b> at Whitgift School</li>
+<li><b>International Baccalaureate Diploma</b>, Whitgift School (2017-2019)</li>
   <ul>
-  <li> Grade: 43/45 </li>
-  <li> HL Mathematics, Physics, Chemistry: 7/7 </li>
-  <li> SL Economics, French: 7/7 | English Literature: 6/7 </li>
+  <li>43/45 points | HL: Mathematics, Physics, Chemistry (7/7)</li>
   </ul>
 </ul>
 
-
-<h2>Work Experience</h2>
+<h2>💼 Work Experience</h2>
 <ul>
-<li>April - September 2022: <b>Computer Vision Intern</b> at Humanising Autonomy</li>
+<li><b>Computer Vision Intern</b>, Humanising Autonomy (2022)</li>
   <ul>
-  <li> Implemented active learning approaches for training object detection models </li>
-  <li> Automated data pipeline with AWS </li>
-  <li> Improved tracking performance of object detection, writing product-quality and unit-tested Python code </li>
-  <li> Developed reproducible way of creating demos on the edge of object detection systems </li>
+  <li>Implemented active learning for object detection, automated AWS data pipeline</li>
+  <li>Enhanced tracking performance and developed edge deployment solutions with product-quality and unit-tested Python code</li>
   </ul>
-<li>June - October 2021: <b>Deep Learning Software Engineering Intern</b> at MathWorks </li>
+<li><b>Deep Learning Software Engineering Intern</b>, MathWorks (2021)</li>
   <ul>
-  <li> Enhanced pooling layers and improved layer performance by up to 40 times </li>
-  <li> Implemented video action recognition example in MATLAB based on <a href="https://arxiv.org/abs/1909.13474" target="_blank">Fast 3D Convolutions</a> </li>
-  
+  <li>Optimized pooling layers (40x performance gain)</li>
+  <li>Implemented video action recognition demo based on <a href="https://arxiv.org/abs/1909.13474" target="_blank">Fast 3D Convolutions</a></li>
   </ul>
 </ul>
 
-<h2>Invited Talks</h2>
+<h2>🎤 Invited Talks</h2>
 <ul>
+<li> Presented PhD project at 2024 AIMS Annual meeting </li>
 <li> Convolutional Neural Processes for Inpainting Satellite Images - 7 June 2022. CSML Reading Group, Imperial College London. <a href="/assets/pdf/CSML_LANDSAT7_Inpainting.pdf" target="_blank">[Slides]</a> </li>
 </ul>
 
-<h2>Reviewing Experience</h2>
+<h2>📝 Reviewing Experience</h2>
 <ul>
-<li> Reviewer for ICLR 2023 Workshop: Tackling Climate Change with Machine Learning <a href="https://www.climatechange.ai/events/iclr2023" target="_blank">[Site]</a> </li>
-<li> Reviewer for NeurIPS 2023 Workshop: Tackling Climate Change with Machine Learning <a href="https://nips.cc/virtual/2023/workshop/66543" target="_blank">[Site]</a> </li>
+<li> Reviewer for NeurIPS and ICLR Workshops on Tackling Climate Change with Machine Learning (2023-present) </li>
 </ul>
 
 <!-- <h2><a href="/assets/pdf/CV_Alexander_Pondaven_site.pdf" target="_blank">CV</a></h2> -->
