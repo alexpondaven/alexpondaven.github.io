@@ -19,7 +19,7 @@ social: true  # includes social icons at the bottom of the page
 🎓 PhD student at Oxford's [Torr Vision Group](https://torrvision.com/index.html) working on controllable video generation - keen on making generations more interactive (or even playable)
 
 ### 🔬 Research
-- **PhD (2023-Present)**: Working on controlling video diffusion models at Oxford AIMS CDT, generously funded by [Snap](https://www.snap.com/) studentship
+- **PhD (2023-Present)**: Working on controlling video diffusion models at Oxford [AIMS CDT](https://aims.robots.ox.ac.uk/), generously funded by [Snap](https://www.snap.com/) studentship
 - **MEng Project (2022-2023)**: Enhanced Stable Diffusion 2 sampling diversity using particle-based methods ([project](/projects/repulsion/) · [slides](/assets/pdf/masters_presentation.pdf){:target="_blank"})
 - **Climate AI (2022)**: Developed meta-learning framework for satellite image inpainting, published at NeurIPS 2022 climate workshop ([paper](https://www.climatechange.ai/papers/neurips2022/24) · [project](/projects/convnp/))
 
