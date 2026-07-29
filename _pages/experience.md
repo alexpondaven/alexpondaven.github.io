@@ -28,6 +28,10 @@ nav_order: 1
 
 <h2>💼 Work Experience</h2>
 <ul>
+<li><b>Research Intern</b>, <a href="https://odyssey.ml/" target="_blank">Odyssey</a> (2026)</li>
+  <ul>
+  <li>Building multiplayer world models &mdash; real-time generative environments that many players can act in at once</li>
+  </ul>
 <li><b>Computer Vision Intern</b>, Humanising Autonomy (2022)</li>
   <ul>
   <li>Implemented active learning for object detection, automated AWS data pipeline</li>
@@ -42,6 +46,7 @@ nav_order: 1
 
 <h2>🎤 Invited Talks</h2>
 <ul>
+<li> Video Motion Transfer with Diffusion Transformers (DiTFlow) &mdash; CVPR 2025 </li>
 <li> Presented PhD project at 2024 AIMS Annual meeting </li>
 <li> Convolutional Neural Processes for Inpainting Satellite Images - 7 June 2022. CSML Reading Group, Imperial College London. <a href="/assets/pdf/CSML_LANDSAT7_Inpainting.pdf" target="_blank">[Slides]</a> </li>
 </ul>

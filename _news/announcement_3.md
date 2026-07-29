@@ -1,7 +1,7 @@
 ---
 layout: post
-date: 2016-01-15 07:59:00-0400
+date: 2025-02-27 09:00:00+0000
 inline: true
 ---
 
-A simple inline announcement with Markdown emoji! :sparkles: :smile:
+[**DiTFlow**](https://ditflow.github.io/) — video motion transfer with diffusion transformers — accepted at **CVPR 2025** 🎉

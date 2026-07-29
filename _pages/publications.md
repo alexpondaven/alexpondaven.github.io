@@ -2,8 +2,8 @@
 layout: page
 permalink: /publications/
 title: Publications
-description: See Google Scholar for full list of publications
-years: [2024, 2022] #, 1956, 1950, 1935, 1905]
+description: See my Google Scholar profile for the full list of publications
+years: [2026, 2025, 2022]
 nav: true
 nav_order: 3
 ---

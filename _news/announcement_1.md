@@ -1,7 +1,7 @@
 ---
 layout: post
-date: 2015-10-22 15:59:00-0400
+date: 2026-06-01 09:00:00+0100
 inline: true
 ---
 
-A simple inline announcement!
+Started a research internship at [Odyssey](https://odyssey.ml/), building **multiplayer world models** 🎮

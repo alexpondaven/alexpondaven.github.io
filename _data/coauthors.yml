@@ -1,18 +1,35 @@
-"Adams":
-  - firstname: ["Edwin", "E.", "E. P.", "Edwin Plimpton"]
-    url: https://en.wikipedia.org/wiki/Edwin_Plimpton_Adams
+"Siarohin":
+  - firstname: ["Aliaksandr"]
+    url: https://aliaksandrsiarohin.github.io/aliaksandr-siarohin-website/
 
-"Podolsky":
-  - firstname: ["Boris", "B.", "B. Y.", "Boris Yakovlevich"]
-    url: https://en.wikipedia.org/wiki/Boris_Podolsky
+"Tulyakov":
+  - firstname: ["Sergey"]
+    url: http://www.stulyakov.com/
 
-"Rosen":
-  - firstname: ["Nathan", "N."]
-    url: https://en.wikipedia.org/wiki/Nathan_Rosen
+"Pizzati":
+  - firstname: ["Fabio"]
+    url: https://fabvio.github.io/
 
-"Bach": 
-  - firstname: ["Johann Sebastian", "J. S."]
-    url: https://en.wikipedia.org/wiki/Johann_Sebastian_Bach
+"Torr":
+  - firstname: ["Philip", "Philip H. S.", "Philip HS"]
+    url: https://torrvision.com/index.html
 
-  - firstname: ["Carl Philipp Emanuel", "C. P. E."]
-    url: https://en.wikipedia.org/wiki/Carl_Philipp_Emanuel_Bach
+"Gilitschenski":
+  - firstname: ["Igor"]
+    url: https://www.gilitschenski.org/igor/
+
+"Wu":
+  - firstname: ["Ziyi"]
+    url: https://wuziyi616.github.io/
+
+"Zhu":
+  - firstname: ["Harrison"]
+    url: https://harrisonzhu508.github.io/
+
+"Bhatt":
+  - firstname: ["Samir"]
+    url: https://www.imperial.ac.uk/people/s.bhatt
+
+"Flaxman":
+  - firstname: ["Seth"]
+    url: https://sethrf.com/

@@ -1,0 +1,161 @@
+<!-- _includes/hero_canvas.html -->
+<!-- Lightweight, dependency-free interactive banner: a field of agents that
+     drift, sense each other, and steer toward the cursor. A small nod to the
+     multiplayer world models I work on. Degrades to a static gradient if JS
+     is off or the user prefers reduced motion. -->
+<div class="hero-canvas-wrap" aria-hidden="true">
+  <canvas id="hero-canvas"></canvas>
+  <span class="hero-hint">move your cursor — the agents will follow</span>
+</div>
+
+<script>
+(function () {
+  var wrap = document.querySelector('.hero-canvas-wrap');
+  var canvas = document.getElementById('hero-canvas');
+  if (!wrap || !canvas || !canvas.getContext) return;
+
+  var prefersReduced = window.matchMedia &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  var ctx = canvas.getContext('2d');
+  var dpr = Math.min(window.devicePixelRatio || 1, 2);
+  var W = 0, H = 0, agents = [], raf = null;
+  var pointer = { x: -9999, y: -9999, active: false };
+
+  function accent() {
+    var c = getComputedStyle(document.documentElement)
+      .getPropertyValue('--global-theme-color').trim();
+    return c || '#4f46e5';
+  }
+  var themeColor = accent();
+
+  function resize() {
+    W = wrap.clientWidth;
+    H = wrap.clientHeight;
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function seed() {
+    var count = Math.round(Math.min(90, Math.max(28, W / 12)));
+    agents = [];
+    for (var i = 0; i < count; i++) {
+      agents.push({
+        x: Math.random() * W,
+        y: Math.random() * H,
+        vx: (Math.random() - 0.5) * 0.5,
+        vy: (Math.random() - 0.5) * 0.5
+      });
+    }
+  }
+
+  function step() {
+    ctx.clearRect(0, 0, W, H);
+
+    // links between nearby agents
+    for (var i = 0; i < agents.length; i++) {
+      var a = agents[i];
+      for (var j = i + 1; j < agents.length; j++) {
+        var b = agents[j];
+        var dx = a.x - b.x, dy = a.y - b.y;
+        var d2 = dx * dx + dy * dy;
+        if (d2 < 9000) {
+          var alpha = (1 - d2 / 9000) * 0.5;
+          ctx.strokeStyle = themeColor;
+          ctx.globalAlpha = alpha;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(b.x, b.y);
+          ctx.stroke();
+        }
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    // agents drift + steer toward the cursor
+    for (var k = 0; k < agents.length; k++) {
+      var p = agents[k];
+      if (pointer.active) {
+        var px = pointer.x - p.x, py = pointer.y - p.y;
+        var pd = Math.sqrt(px * px + py * py) || 1;
+        if (pd < 220) {
+          p.vx += (px / pd) * 0.06;
+          p.vy += (py / pd) * 0.06;
+        }
+      }
+      p.vx *= 0.96; p.vy *= 0.96;
+      var sp = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
+      var max = 1.4;
+      if (sp > max) { p.vx = (p.vx / sp) * max; p.vy = (p.vy / sp) * max; }
+      p.x += p.vx; p.y += p.vy;
+
+      if (p.x < 0) p.x += W; else if (p.x > W) p.x -= W;
+      if (p.y < 0) p.y += H; else if (p.y > H) p.y -= H;
+
+      ctx.fillStyle = themeColor;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 2.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    raf = requestAnimationFrame(step);
+  }
+
+  function drawStatic() {
+    ctx.clearRect(0, 0, W, H);
+    for (var k = 0; k < agents.length; k++) {
+      var p = agents[k];
+      ctx.fillStyle = themeColor;
+      ctx.globalAlpha = 0.6;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 2.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function pointFromEvent(e) {
+    var r = canvas.getBoundingClientRect();
+    var t = e.touches ? e.touches[0] : e;
+    pointer.x = t.clientX - r.left;
+    pointer.y = t.clientY - r.top;
+    pointer.active = true;
+  }
+  wrap.addEventListener('mousemove', pointFromEvent);
+  wrap.addEventListener('touchmove', pointFromEvent, { passive: true });
+  wrap.addEventListener('mouseleave', function () { pointer.active = false; });
+  wrap.addEventListener('touchend', function () { pointer.active = false; });
+
+  function start() {
+    themeColor = accent();
+    resize();
+    seed();
+    if (raf) cancelAnimationFrame(raf);
+    if (prefersReduced) { drawStatic(); } else { step(); }
+  }
+
+  var rt;
+  window.addEventListener('resize', function () {
+    clearTimeout(rt);
+    rt = setTimeout(start, 150);
+  });
+  // re-read the accent colour when the light/dark theme is toggled
+  new MutationObserver(function () {
+    themeColor = accent();
+  }).observe(document.documentElement, {
+    attributes: true, attributeFilter: ['data-theme', 'class']
+  });
+
+  // pause when the tab is hidden
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) { if (raf) cancelAnimationFrame(raf); }
+    else if (!prefersReduced) { step(); }
+  });
+
+  start();
+})();
+</script>

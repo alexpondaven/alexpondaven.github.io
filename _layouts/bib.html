@@ -1,7 +1,7 @@
 ---
 ---
 <!-- _layouts/bib.html -->
-      <div class="row">
+      <div class="row{% if entry.preview %} bib-with-preview{% endif %}">
         <div class="col-sm-2 abbr">
         {%- if entry.abbr -%}
           {%- if site.data.venues[entry.abbr] -%}
@@ -157,4 +157,28 @@
           </div>
           {%- endif %}
         </div>
+
+        {%- if entry.preview %}
+        <!-- Preview thumbnail -->
+        <div class="col-sm-2 preview">
+          {%- if entry.preview contains '://' -%}
+            {%- assign preview_path = entry.preview -%}
+          {%- else -%}
+            {%- assign preview_path = entry.preview | prepend: '/assets/preview/' | relative_url -%}
+          {%- endif -%}
+          {%- assign preview_link = entry.website | default: entry.html | default: entry.url -%}
+          {%- capture preview_media -%}
+            {%- if entry.preview contains '.mp4' or entry.preview contains '.webm' -%}
+            <video autoplay loop muted playsinline><source src="{{ preview_path }}" type="video/mp4"></video>
+            {%- else -%}
+            <img src="{{ preview_path }}" alt="{{ entry.title }}" loading="lazy">
+            {%- endif -%}
+          {%- endcapture -%}
+          {%- if preview_link -%}
+          <a href="{{ preview_link }}" target="_blank" rel="noopener">{{ preview_media }}</a>
+          {%- else -%}
+          {{ preview_media }}
+          {%- endif -%}
+        </div>
+        {%- endif %}
       </div>
