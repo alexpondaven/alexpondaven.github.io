@@ -48,11 +48,13 @@ nav_order: 1
 <ul>
 <li> Video Motion Transfer with Diffusion Transformers (DiTFlow) &mdash; CVPR 2025 </li>
 <li> Presented PhD project at 2024 AIMS Annual meeting </li>
+<li> YCML Poster Symposium </li>
 <li> Convolutional Neural Processes for Inpainting Satellite Images - 7 June 2022. CSML Reading Group, Imperial College London. <a href="/assets/pdf/CSML_LANDSAT7_Inpainting.pdf" target="_blank">[Slides]</a> </li>
 </ul>
 
 <h2>📝 Reviewing Experience</h2>
 <ul>
+<li> Reviewer for CVPR, ICCV, NeurIPS, and SIGGRAPH </li>
 <li> Reviewer for NeurIPS and ICLR Workshops on Tackling Climate Change with Machine Learning (2023-present) </li>
 </ul>
 
