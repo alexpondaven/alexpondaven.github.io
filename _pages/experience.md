@@ -32,6 +32,11 @@ nav_order: 1
   <ul>
   <li>Building multiplayer world models &mdash; real-time generative environments that many players can act in at once</li>
   </ul>
+<li><b>Research Intern</b>, <a href="https://www.snap.com/" target="_blank">Snap Inc.</a> (Mar 2025 - May 2026)</li>
+  <ul>
+  <li>Video generative modelling research at Snap Research, Santa Monica</li>
+  <li>Co-authored <a href="https://ditflow.github.io/" target="_blank">DiTFlow</a> (CVPR 2025) and <a href="https://action-party.github.io/" target="_blank">ActionParty</a> (ECCV 2026)</li>
+  </ul>
 <li><b>Computer Vision Intern</b>, Humanising Autonomy (2022)</li>
   <ul>
   <li>Implemented active learning for object detection, automated AWS data pipeline</li>
