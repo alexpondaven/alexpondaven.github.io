@@ -67,8 +67,10 @@ async function init() {
     if (a > cap) { ax *= cap / a; ay *= cap / a; }
     c.vx = (c.vx + ax) * FRICTION;
     c.vy = (c.vy + ay) * FRICTION;
-    c.x = Math.max(-1, Math.min(1, c.x + c.vx));
-    c.y = Math.max(-1, Math.min(1, c.y + c.vy));
+    // keep bodies fully inside the stage — a critter cowering ON the border
+    // gets its body clipped by the frame and looks like a rendering bug
+    c.x = Math.max(-0.955, Math.min(0.955, c.x + c.vx));
+    c.y = Math.max(-0.955, Math.min(0.955, c.y + c.vy));
     return dt;
   }
 
