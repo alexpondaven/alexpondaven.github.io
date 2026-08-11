@@ -105,23 +105,28 @@
   // can't learn integral action (that would need internal state).
   let guidance = true;
 
-  // Cycle mode: three copies of the model chase each other in a ring — each
-  // ball's token is where the NEXT ball was CYCLE_DELAY steps ago (following
-  // its trajectory, not its current position: chasing current positions
-  // makes the ring collapse onto a single point within seconds; the ~1.25s
-  // lag keeps it alive). Ball 0 takes the player's actions, the others get
-  // action "none" and move purely because the ring pulls them. There is no
-  // ground truth here at all — every ball is a model rollout, coupled only
-  // through the learned token input.
+  // Cycle mode: three copies of the model in a ring, each following the
+  // NEXT ball's current state. Pure following would collapse the ring onto
+  // one point, so the two non-player balls also live their own lives with
+  // sticky random actions — their exploration keeps the ring spread out
+  // while the pull keeps it loosely together. Ball 0 takes the player's
+  // actions. There is no ground truth here at all — every ball is a model
+  // rollout, coupled only through the learned token input.
+  //
+  // FOLLOW_STRENGTH softens the chase without retraining: the learned pull
+  // is (verified) roughly linear in (token - state), so feeding a token
+  // interpolated partway toward the target scales the pull by the same
+  // fraction — "follow slowly" for free.
   let mode = 'solo';
-  const CYCLE_DELAY = 25;
+  const FOLLOW_STRENGTH = 0.4;
   const TRAIL_LEN = 45;
   const CYCLE_STARTS = [[-0.5, 0, 0, 0], [0.5, 0.3, 0, 0], [0, -0.5, 0, 0]];
-  let balls = [], histories = [], trails = [];
+  let balls = [], trails = [];
+  const cycleActs = [0, 0, 0], cycleHolds = [0, 0, 0];
   function resetCycle() {
     balls = CYCLE_STARTS.map((s) => s.slice());
-    histories = balls.map((b) => Array.from({ length: CYCLE_DELAY }, () => b.slice()));
     trails = [[], [], []];
+    for (let i = 0; i < 3; i++) { cycleActs[i] = 0; cycleHolds[i] = 0; }
   }
   function clampState(s) {
     // safety net so a coupling surprise can't fling a ball to infinity
@@ -268,17 +273,31 @@
   }
 
   function stepCycle() {
-    // Token for ball i = where ball i+1 was CYCLE_DELAY steps ago.
-    const tokens = balls.map((_, i) => histories[(i + 1) % 3][0]);
-    const next = balls.map((b, i) =>
-      clampState(modelStep(b, i === 0 ? currentAction : 0, tokens[i])));
+    // Non-player balls wander with sticky random actions (hold a "key" for
+    // 0.5-1.5s, like a human would).
+    for (let i = 1; i < 3; i++) {
+      if (cycleHolds[i] <= 0) {
+        cycleActs[i] = Math.floor(Math.random() * N_ACTIONS);
+        cycleHolds[i] = 10 + Math.floor(Math.random() * 20);
+      }
+      cycleHolds[i]--;
+    }
+    // Token for ball i = partway toward ball i+1's current state.
+    const tokens = balls.map((b, i) => {
+      const target = balls[(i + 1) % 3];
+      return [
+        b[0] + FOLLOW_STRENGTH * (target[0] - b[0]),
+        b[1] + FOLLOW_STRENGTH * (target[1] - b[1]),
+        b[2] + FOLLOW_STRENGTH * (target[2] - b[2]),
+        b[3] + FOLLOW_STRENGTH * (target[3] - b[3]),
+      ];
+    });
+    balls = balls.map((b, i) =>
+      clampState(modelStep(b, i === 0 ? currentAction : cycleActs[i], tokens[i])));
     for (let i = 0; i < 3; i++) {
-      histories[i].push(balls[i].slice());
-      histories[i].shift();
       trails[i].push([balls[i][0], balls[i][1]]);
       if (trails[i].length > TRAIL_LEN) trails[i].shift();
     }
-    balls = next;
   }
 
   function tick(now) {
