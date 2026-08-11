@@ -23,4 +23,6 @@ Even guided, the pull is weak enough that the model visibly wanders — the same
 
 {% include worldmodel.html %}
 
+**Cycle mode** drops the ground truth entirely: three copies of the model chase each other in a ring — each ball's token is where the next ball was ~1.25 s ago, and you drive the bright one. Every ball is a pure model rollout; the only thing holding the ring together is the learned token pull, so your inputs ripple around the loop with a lag. (Chasing *current* positions instead of delayed ones makes the ring collapse onto a single point — try to imagine why.) A tiny taste of multiplayer world models: several agents, one learned dynamics, coupled through conditioning.
+
 Training script (hand-rolled backprop, no ML libraries) is [here](/assets/worldmodel/train.js).

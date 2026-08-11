@@ -105,10 +105,39 @@
   // can't learn integral action (that would need internal state).
   let guidance = true;
 
+  // Cycle mode: three copies of the model chase each other in a ring — each
+  // ball's token is where the NEXT ball was CYCLE_DELAY steps ago (following
+  // its trajectory, not its current position: chasing current positions
+  // makes the ring collapse onto a single point within seconds; the ~1.25s
+  // lag keeps it alive). Ball 0 takes the player's actions, the others get
+  // action "none" and move purely because the ring pulls them. There is no
+  // ground truth here at all — every ball is a model rollout, coupled only
+  // through the learned token input.
+  let mode = 'solo';
+  const CYCLE_DELAY = 25;
+  const TRAIL_LEN = 45;
+  const CYCLE_STARTS = [[-0.5, 0, 0, 0], [0.5, 0.3, 0, 0], [0, -0.5, 0, 0]];
+  let balls = [], histories = [], trails = [];
+  function resetCycle() {
+    balls = CYCLE_STARTS.map((s) => s.slice());
+    histories = balls.map((b) => Array.from({ length: CYCLE_DELAY }, () => b.slice()));
+    trails = [[], [], []];
+  }
+  function clampState(s) {
+    // safety net so a coupling surprise can't fling a ball to infinity
+    return [
+      Math.max(-1.5, Math.min(1.5, s[0])), Math.max(-1.5, Math.min(1.5, s[1])),
+      Math.max(-0.5, Math.min(0.5, s[2])), Math.max(-0.5, Math.min(0.5, s[3])),
+    ];
+  }
+  resetCycle();
+
   const toggleBtn = document.getElementById('wm-toggle-truth');
   const groundBtn = document.getElementById('wm-toggle-ground');
+  const modeBtn = document.getElementById('wm-toggle-mode');
   const resetBtn = document.getElementById('wm-reset');
   const driftEl = document.getElementById('wm-drift');
+  const hudEl = document.querySelector('.wm-hud');
   const statusEl = document.getElementById('wm-status');
 
   if (toggleBtn) {
@@ -125,10 +154,25 @@
       groundBtn.setAttribute('aria-pressed', String(guidance));
     });
   }
+  if (modeBtn) {
+    modeBtn.addEventListener('click', () => {
+      mode = mode === 'solo' ? 'cycle' : 'solo';
+      modeBtn.textContent = mode === 'solo' ? 'Mode: solo' : 'Mode: cycle';
+      // Ground truth and guidance only mean something in solo mode.
+      const soloOnly = mode === 'solo' ? '' : 'none';
+      if (toggleBtn) toggleBtn.style.display = soloOnly;
+      if (groundBtn) groundBtn.style.display = soloOnly;
+      if (hudEl) hudEl.style.display = soloOnly;
+      modelState = [0, 0, 0, 0];
+      truthState = [0, 0, 0, 0];
+      resetCycle();
+    });
+  }
   if (resetBtn) {
     resetBtn.addEventListener('click', () => {
       modelState = [0, 0, 0, 0];
       truthState = [0, 0, 0, 0];
+      resetCycle();
     });
   }
 
@@ -140,11 +184,9 @@
     return [((nx + 1) / 2) * w, ((ny + 1) / 2) * h];
   }
 
-  function draw() {
-    const w = canvas.width / (window.devicePixelRatio || 1);
-    const h = canvas.height / (window.devicePixelRatio || 1);
-    ctx.clearRect(0, 0, w, h);
+  const CYCLE_COLORS = [null, '#f59e0b', '#14b8a6']; // null = accent (player)
 
+  function drawSolo(w, h) {
     if (showTruth) {
       const [tx, ty] = toPixel(truthState[0], truthState[1], w, h);
       ctx.strokeStyle = '#9ca3af';
@@ -164,9 +206,39 @@
 
     if (driftEl) {
       const dx = truthState[0] - modelState[0], dy = truthState[1] - modelState[1];
-      const drift = Math.sqrt(dx * dx + dy * dy);
-      driftEl.textContent = drift.toFixed(3);
+      driftEl.textContent = Math.sqrt(dx * dx + dy * dy).toFixed(3);
     }
+  }
+
+  function drawCycle(w, h) {
+    for (let i = 0; i < 3; i++) {
+      const color = CYCLE_COLORS[i] || accent();
+      const trail = trails[i];
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      for (let t = 1; t < trail.length; t++) {
+        ctx.globalAlpha = (t / trail.length) * 0.35;
+        const [x0, y0] = toPixel(trail[t - 1][0], trail[t - 1][1], w, h);
+        const [x1, y1] = toPixel(trail[t][0], trail[t][1], w, h);
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x1, y1);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+      const [bx, by] = toPixel(balls[i][0], balls[i][1], w, h);
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(bx, by, i === 0 ? 10 : 8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function draw() {
+    const w = canvas.width / (window.devicePixelRatio || 1);
+    const h = canvas.height / (window.devicePixelRatio || 1);
+    ctx.clearRect(0, 0, w, h);
+    if (mode === 'solo') drawSolo(w, h); else drawCycle(w, h);
   }
 
   function resize() {
@@ -186,17 +258,34 @@
   const STEP_INTERVAL_MS = 50;
   let lastStepTime = 0;
 
+  function stepSolo() {
+    // The token must be the true state at the SAME timestep as modelState —
+    // i.e. captured before either advances — matching how the network was
+    // trained.
+    const token = guidance ? truthState : null;
+    truthState = physicsStep(truthState, currentAction);
+    modelState = modelStep(modelState, currentAction, token);
+  }
+
+  function stepCycle() {
+    // Token for ball i = where ball i+1 was CYCLE_DELAY steps ago.
+    const tokens = balls.map((_, i) => histories[(i + 1) % 3][0]);
+    const next = balls.map((b, i) =>
+      clampState(modelStep(b, i === 0 ? currentAction : 0, tokens[i])));
+    for (let i = 0; i < 3; i++) {
+      histories[i].push(balls[i].slice());
+      histories[i].shift();
+      trails[i].push([balls[i][0], balls[i][1]]);
+      if (trails[i].length > TRAIL_LEN) trails[i].shift();
+    }
+    balls = next;
+  }
+
   function tick(now) {
     if (running) {
       if (now - lastStepTime >= STEP_INTERVAL_MS) {
         lastStepTime = now;
-
-        // The token must be the true state at the SAME timestep as
-        // modelState — i.e. captured before either advances — matching how
-        // the network was trained.
-        const token = guidance ? truthState : null;
-        truthState = physicsStep(truthState, currentAction);
-        modelState = modelStep(modelState, currentAction, token);
+        if (mode === 'solo') stepSolo(); else stepCycle();
       }
       draw();
     }
