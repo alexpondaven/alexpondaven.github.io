@@ -1,22 +1,26 @@
-// The /colony/ ecosystem, now with continual learning. The paragraph is the
-// environment; every letter is a physical object with a home slot.
+// The /colony/ dynasty. The paragraph is the environment; every letter is a
+// physical object with a home slot. Movement for every caste comes from ONE
+// frozen tiny MLP (assets/worldmodel/critter_train.js). On top of it sits a
+// three-level learning hierarchy, each level grounded in the one below:
 //
-// Castes (all movement steered by ONE frozen tiny MLP — see
-// assets/worldmodel/critter_train.js):
-//   workers (4) — dismantle the text into a pile, then rebuild it
-//   slinger (1) — throws letters at the monster during raids
-//   monster (1) — raids every so often and eats letters until driven off
-//   elder   (1) — the critic: watches outcomes and hands out rewards
+//   actors  (seconds)     workers + slinger learn online from the elder's
+//                         reward verdicts (contextual bandit / aim search)
+//   critics (reigns)      the elder's verdicts are its GENOME — five reward
+//                         magnitudes. Elders reign ~90s; their fitness is
+//                         the colony's measured prosperity during the reign.
+//                         Bad teachers produce poor colonies and their line
+//                         dies out.
+//   the Ancestor (eras)   the critic of critics. It ends reigns, keeps the
+//                         ancestor ledger, chooses which lineage continues
+//                         (softmax over reign fitness) and adapts its own
+//                         mutation boldness to the cross-generation trend.
 //
-// The LEARNING happens in the decision layer, live in your browser:
-//   - the slinger's aim (how far to lead a moving monster) starts naive and
-//     hill-climbs from the elder's hit/miss rewards
-//   - workers pick jobs with a tiny linear value model (distance, risk,
-//     stray-ness) updated online from delivery/theft/drop rewards
-// Learned state persists in localStorage, so the colony gets better across
-// visits. The steering net itself stays frozen.
+// Workers and the slinger also age, die and hatch heirs that inherit mutated
+// weights from the strongest living kin. The whole dynasty persists in
+// localStorage: your colony, your lineage.
 const stage = document.getElementById('colony-stage');
 const statusEl = document.getElementById('colony-status');
+const eventEl = document.getElementById('colony-event');
 
 if (stage) {
   if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
@@ -76,7 +80,7 @@ async function init() {
     return dt;
   }
 
-  // --- letters ----------------------------------------------------------------
+  // --- letters ------------------------------------------------------------------
   const textEl = stage.querySelector('.colony-text');
   const raw = textEl.textContent;
   textEl.textContent = '';
@@ -132,63 +136,89 @@ async function init() {
   let pileCount = 0;
   const inPileZone = (p) => p.y > H - 95;
 
-  // --- continual learning state (persists across visits) -----------------------
-  const LEARN_KEY = 'colony-learn-v1';
-  let learn = {
-    aim: { lead: 0, sigma: 5, throws: 0, hits: 0, recent: [] },   // slinger
-    jobW: [0.5, -0.5, -0.5, 0.3],                                  // worker value weights
-    elder: { plus: 0, minus: 0 },
-  };
-  try {
-    const saved = JSON.parse(localStorage.getItem(LEARN_KEY));
-    if (saved && saved.aim && saved.jobW) learn = saved;
-  } catch (e) { /* fresh colony */ }
-  function saveLearn() {
-    try { localStorage.setItem(LEARN_KEY, JSON.stringify(learn)); } catch (e) { /* private mode */ }
-  }
-  setInterval(saveLearn, 10000);
-  document.addEventListener('visibilitychange', () => { if (document.hidden) saveLearn(); });
-
   const randn = () => {
     let u = 0, v = 0;
     while (u === 0) u = Math.random();
     while (v === 0) v = Math.random();
     return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
   };
+  const clamp3 = (v) => Math.max(-3, Math.min(3, v));
+  const roman = (n) => {
+    const T = [[100, 'C'], [90, 'XC'], [50, 'L'], [40, 'XL'], [10, 'X'], [9, 'IX'], [5, 'V'], [4, 'IV'], [1, 'I']];
+    let s = '';
+    for (const [v, r] of T) while (n >= v) { s += r; n -= v; }
+    return s || 'I';
+  };
 
-  // job value model: features -> scalar. Linear on purpose: four weights are
-  // enough to express "prefer close, safe letters", they learn in seconds,
-  // and you can read the learned policy right out of the numbers.
+  // --- the dynasty (persists across visits) ----------------------------------------
+  const LEARN_KEY = 'colony-dynasty-v1';
+  const freshGenome = () => ({ deliver: 1, theft: -1.5, drop: -0.5, hit: 1, miss: -1 });
+  const freshWorkerW = () => [0.5, -0.5, -0.5, 0.3];
+  let learn = {
+    aim: { lead: 0, sigma: 5, throws: 0, hits: 0, recent: [] },
+    slingerGen: 1,
+    workerBrains: [1, 2, 3, 4].map(() => ({ w: freshWorkerW(), gen: 1 })),
+    elder: { genome: freshGenome(), ordinal: 1 },
+    reign: { steps: 0, deliver: 0, eaten: 0, drops: 0, pops: 0 },
+    lineage: { ancestors: [], sigmaMut: 0.35, plus: 0, minus: 0, fitHistory: [] },
+  };
+  try {
+    const saved = JSON.parse(localStorage.getItem(LEARN_KEY));
+    if (saved && saved.aim && saved.elder && saved.lineage) learn = saved;
+  } catch (e) { /* fresh dynasty */ }
+  function saveLearn() {
+    try { localStorage.setItem(LEARN_KEY, JSON.stringify(learn)); } catch (e) { /* private mode */ }
+  }
+  setInterval(saveLearn, 10000);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) saveLearn(); });
+  window.__colonyLearn = learn;
+
+  // colony prosperity — the GROUND TRUTH that ultimately anchors every level
+  // of critic. Fixed by the world, not by any agent.
+  // deliveries are frequent (a busy colony logs ~90/min hauling the pile), so
+  // they're discounted — otherwise churn drowns out the defense signal and
+  // elder selection stops caring about raids at all
+  const reignFitness = (r) =>
+    (0.15 * r.deliver - 2.5 * r.eaten - 0.5 * r.drops + 4 * r.pops) / Math.max(0.5, r.steps / 1800); // per minute
+
+  function announce(txt) {
+    if (!eventEl) return;
+    eventEl.textContent = txt;
+    eventEl.style.opacity = '1';
+    clearTimeout(announce.t);
+    announce.t = setTimeout(() => { eventEl.style.opacity = '0.35'; }, 6000);
+  }
+
+  // --- reward plumbing ----------------------------------------------------------
+  const sparks = [];
+  function emitReward(c, r) {
+    if (!elder.alive) return;             // no verdicts during an interregnum
+    const p = toPx(c);
+    if (sparks.length > 5) sparks.shift();
+    sparks.push({ x: p.x, y: p.y - 16, txt: (r > 0 ? '+' : '−') + Math.abs(r).toFixed(1).replace(/\.0$/, ''), good: r > 0, t: 45 });
+    if (r > 0) learn.lineage.plus++; else learn.lineage.minus++;
+    elder.interest = { x: c.x, y: c.y };
+  }
+
   function jobFeatures(c, L) {
     const p = L.at === 'home' ? L.home : L.pos;
     const n = toNorm(p);
-    const dist = Math.hypot(n.x - c.x, n.y - c.y) / 2.8;            // 0..1
+    const dist = Math.hypot(n.x - c.x, n.y - c.y) / 2.8;
     let risk = 0;
     if (monster) risk = Math.max(0, 1 - Math.hypot(n.x - monster.x, n.y - monster.y) / 0.55);
     const stray = L.at === 'ground' && !inPileZone(L.pos) ? 1 : 0;
     return [1, dist, risk, stray];
   }
-  const jobValue = (f) => f.reduce((s, v, i) => s + v * learn.jobW[i], 0);
+  const jobValue = (w, f) => f.reduce((s, v, i) => s + v * w[i], 0);
   function rewardWorker(c, r) {
-    if (!c.lastJobF) return;
-    const v = jobValue(c.lastJobF);
-    for (let i = 0; i < learn.jobW.length; i++) {
-      learn.jobW[i] = Math.max(-3, Math.min(3, learn.jobW[i] + 0.08 * (r - v) * c.lastJobF[i]));
-    }
+    if (!c.lastJobF || !elder.alive) return;
+    const w = c.brain.w;
+    const v = jobValue(w, c.lastJobF);
+    for (let i = 0; i < w.length; i++) w[i] = clamp3(w[i] + 0.08 * (r - v) * c.lastJobF[i]);
     emitReward(c, r);
   }
 
-  // the elder's visible verdicts
-  const sparks = [];   // {x, y, txt, good, t}
-  function emitReward(c, r) {
-    const p = toPx(c);
-    if (sparks.length > 5) sparks.shift();
-    sparks.push({ x: p.x, y: p.y - 16, txt: (r > 0 ? '+' : '−') + Math.abs(r).toFixed(1).replace(/\.0$/, ''), good: r > 0, t: 45 });
-    if (r > 0) learn.elder.plus++; else learn.elder.minus++;
-    elder.interest = { x: c.x, y: c.y };
-  }
-
-  // --- cursor ------------------------------------------------------------------
+  // --- cursor ---------------------------------------------------------------------
   const cursor = { x: 2.2, y: 2.2, vx: 0, vy: 0, px: 2.2, py: 2.2, active: false };
   stage.addEventListener('pointermove', (e) => {
     const rect = stage.getBoundingClientRect();
@@ -204,6 +234,7 @@ async function init() {
       return;
     }
     for (const c of critters) {
+      if (!c.alive) continue;
       const dx = c.x - n.x, dy = c.y - n.y;
       const d = Math.hypot(dx, dy);
       if (d < 0.45 && d > 1e-6) {
@@ -211,60 +242,77 @@ async function init() {
         c.vx += (dx / d) * kick;
         c.vy += (dy / d) * kick;
         if (c.carrying >= 0) {
-          const L = letters[c.carrying];
-          L.at = 'ground';
-          L.pos = toPx({ x: c.x, y: c.y });
-          L.angle = (Math.random() - 0.5) * 0.9;
-          L.claimed = false;
-          if (c.role === 'worker') rewardWorker(c, -0.5);
-          L.owner = null;
-          c.carrying = -1;
-          c.job = null;
+          dropCarried(c);
+          if (c.role === 'worker') {
+            learn.reign.drops++;
+            rewardWorker(c, elder.genome.drop);
+          }
         }
       }
     }
   });
+  function dropCarried(c) {
+    const L = letters[c.carrying];
+    L.at = 'ground';
+    L.pos = toPx({ x: c.x, y: c.y });
+    L.angle = (Math.random() - 0.5) * 0.9;
+    L.claimed = false;
+    L.owner = null;
+    c.carrying = -1;
+    c.job = null;
+  }
 
-  // --- castes -------------------------------------------------------------------
+  // --- castes -----------------------------------------------------------------------
   const WORKER_COLORS = ['#818cf8', '#a78bfa', '#6ee7b7', '#7dd3fc'];
-  const critters = [
-    ...WORKER_COLORS.map((color, i) => makeSmall('worker', color, i)),
-    makeSmall('slinger', '#fb923c', 5),
-  ];
-  const elder = { role: 'elder', x: 0.6, y: 0.6, vx: 0, vy: 0, interest: null, wanderT: 0, wander: { x: 0.5, y: 0.5 }, blinkT: 200, blink: 0, seed: 4242 };
-  function makeSmall(role, color, i) {
+  function makeSmall(role, color, i, brain) {
     return {
-      role, color,
+      role, color, brain,
+      alive: true, fade: 1, hatch: 0,
+      age: 0, lifespan: role === 'worker' ? 4000 + Math.random() * 2000 : 5000 + Math.random() * 2000,
+      lifetimeDeliveries: 0,
       x: (Math.random() * 2 - 1) * 0.8, y: (Math.random() * 2 - 1) * 0.8,
       vx: 0, vy: 0,
       carrying: -1, job: null, lastJobF: null,
       wanderT: 0, wander: { x: 0, y: 0 },
       blinkT: 60 + Math.random() * 120, blink: 0,
-      throwCooldown: 0, thrownLead: 0,
+      throwCooldown: 0,
       seed: i * 977,
     };
   }
+  const critters = [
+    ...WORKER_COLORS.map((color, i) => makeSmall('worker', color, i, learn.workerBrains[i])),
+    makeSmall('slinger', '#fb923c', 5, { aim: learn.aim, gen: learn.slingerGen }),
+  ];
+  const eggs = [];   // {x, y, t, role, slot, color, brain, gen}
 
-  // one monster, arriving in RAIDS with calm in between
+  // the elder: reigning critic
+  const elder = {
+    role: 'elder', alive: true, fade: 1,
+    x: 0.6, y: 0.6, vx: 0, vy: 0,
+    interest: null, wanderT: 0, wander: { x: 0.5, y: 0.5 },
+    blinkT: 200, blink: 0, seed: 4242,
+    genome: learn.elder.genome,
+  };
+  let interregnum = 0;          // steps until the next elder hatches
+  let ancestorGlow = 0;         // the arch-critic's apparition timer
+
+  // one monster, raid pacing
   let monster = null;
-  let raidTimer = 500 + Math.random() * 400;   // first raid ~20-30s in
+  let raidTimer = 500 + Math.random() * 400;
   function spawnMonster() {
     const edge = Math.random() < 0.5 ? -1 : 1;
     monster = {
       x: edge * 0.95, y: (Math.random() * 2 - 1) * 0.7,
       vx: 0, vy: 0,
       belly: [], hits: 0, target: -1,
-      cooldown: 40,
-      flash: 0, mouth: 0,
-      wanderT: 0, wander: null,
-      seed: 313,
+      cooldown: 40, flash: 0, mouth: 0,
+      wanderT: 0, wander: null, seed: 313,
     };
   }
   const projectiles = [];
   const bursts = [];
-  const stats = { eaten: 0, thrown: 0, hits: 0, pops: 0, delivered: 0 };
+  const stats = { eaten: 0, thrown: 0, hits: 0, pops: 0, delivered: 0, successions: 0, hatched: 0 };
   window.__colony = stats;
-  window.__colonyLearn = learn;
 
   function hitMonster() {
     if (!monster) return;
@@ -282,16 +330,112 @@ async function init() {
         L.claimed = false;
       }
       monster = null;
-      raidTimer = 1200 + Math.random() * 900;   // 40-70s of calm
+      raidTimer = 1200 + Math.random() * 900;
+      learn.reign.pops++;
       stats.pops++;
     }
   }
 
-  // --- jobs ---------------------------------------------------------------------
+  // --- the Ancestor: succession of elders ---------------------------------------------
+  function endReign(reason) {
+    const fit = reignFitness(learn.reign);
+    const entry = {
+      ord: learn.elder.ordinal,
+      genome: { ...elder.genome },
+      fit: +fit.toFixed(2),
+      reignS: Math.round(learn.reign.steps / 30),
+    };
+    const anc = learn.lineage.ancestors;
+    anc.push(entry);
+    // ledger: keep the best 6 + the most recent 4
+    anc.sort((a, b) => b.fit - a.fit);
+    const best = anc.slice(0, 6);
+    const recent = anc.filter((a) => !best.includes(a)).slice(-4);
+    learn.lineage.ancestors = [...best, ...recent];
+    learn.lineage.fitHistory.push(entry.fit);
+    if (learn.lineage.fitHistory.length > 12) learn.lineage.fitHistory.shift();
+
+    // the Ancestor's own learning: bolder mutations when the dynasty
+    // stagnates, careful ones while it improves
+    const h = learn.lineage.fitHistory;
+    if (h.length >= 4) {
+      const prev = (h[h.length - 4] + h[h.length - 3]) / 2;
+      const now = (h[h.length - 2] + h[h.length - 1]) / 2;
+      learn.lineage.sigmaMut = now > prev + 0.2
+        ? Math.max(0.1, learn.lineage.sigmaMut * 0.85)
+        : Math.min(0.8, learn.lineage.sigmaMut * 1.15);
+    }
+
+    elder.alive = false;
+    interregnum = 140;          // ~4.5s without verdicts
+    ancestorGlow = 140;
+    stats.successions++;
+    announce(`Elder ${roman(entry.ord)}'s reign ends at ${entry.fit >= 0 ? '+' : ''}${entry.fit}/min${reason === 'mercy' ? ' — the Ancestor shows no patience for bad teachers' : ''}`);
+  }
+
+  function crownSuccessor() {
+    const anc = learn.lineage.ancestors;
+    // softmax over reign fitness picks the line to continue
+    let parent = anc[0];
+    if (anc.length > 1) {
+      const mx = Math.max(...anc.map((a) => a.fit));
+      const exps = anc.map((a) => Math.exp((a.fit - mx) / 2));
+      const Z = exps.reduce((a, b) => a + b, 0);
+      let pick = Math.random() * Z;
+      for (let i = 0; i < anc.length; i++) { pick -= exps[i]; if (pick <= 0) { parent = anc[i]; break; } }
+    }
+    const g = {};
+    for (const k of Object.keys(parent.genome)) g[k] = clamp3(parent.genome[k] + randn() * learn.lineage.sigmaMut);
+    learn.elder.ordinal++;
+    learn.elder.genome = g;
+    elder.genome = g;
+    elder.alive = true;
+    elder.fade = 0;
+    elder.x = 0.6; elder.y = 0.6; elder.vx = 0; elder.vy = 0;
+    learn.reign = { steps: 0, deliver: 0, eaten: 0, drops: 0, pops: 0 };
+    announce(`Elder ${roman(learn.elder.ordinal)} is crowned — line of Elder ${roman(parent.ord)}`);
+  }
+
+  // --- deaths and hatchings for the small castes ---------------------------------------
+  function retire(c) {
+    if (c.carrying >= 0) dropCarried(c);
+    if (c.job) { c.job.letter.claimed = false; c.job.letter.owner = null; c.job = null; }
+    c.alive = false;            // fade handled in draw; egg laid immediately
+    const slot = critters.indexOf(c);
+    let brain, gen;
+    if (c.role === 'worker') {
+      // heir of the strongest living worker (deliveries per step of age)
+      const living = critters.filter((o) => o.alive && o.role === 'worker' && o.age > 300);
+      const best = living.sort((a, b) => b.lifetimeDeliveries / (b.age + 1) - a.lifetimeDeliveries / (a.age + 1))[0];
+      const src = best ? best.brain.w : c.brain.w;
+      brain = { w: src.map((v) => clamp3(v + randn() * 0.15)), gen: (best ? best.brain.gen : c.brain.gen) + 1 };
+      gen = brain.gen;
+    } else {
+      // the slinger's heir keeps the learned lead but hatches curious again
+      learn.aim.sigma = Math.min(6, learn.aim.sigma + 1.5);
+      learn.slingerGen++;
+      brain = { aim: learn.aim, gen: learn.slingerGen };
+      gen = learn.slingerGen;
+    }
+    eggs.push({ x: toPx(c).x, y: toPx(c).y, t: 160, role: c.role, slot, color: c.color, brain, gen });
+    announce(`a ${c.role} of gen ${c.brain.gen} passes on — its heir is laid`);
+  }
+
+  function hatch(egg) {
+    const nc = makeSmall(egg.role, egg.color, egg.slot, egg.brain);
+    const n = toNorm({ x: egg.x, y: egg.y });
+    nc.x = Math.max(-0.9, Math.min(0.9, n.x));
+    nc.y = Math.max(-0.9, Math.min(0.9, n.y));
+    nc.hatch = 90;              // grows up over ~3s
+    critters[egg.slot] = nc;
+    if (egg.role === 'worker') learn.workerBrains[egg.slot] = egg.brain;
+    stats.hatched++;
+  }
+
+  // --- jobs -------------------------------------------------------------------------
   let mode = 'dismantle';
   let restT = 0;
 
-  // workers CHOOSE among candidate jobs with the learned value model
   function claimWorkerJob(c) {
     if (mode === 'rest') return null;
     const cands = [];
@@ -317,9 +461,8 @@ async function init() {
       }
     }
     if (!cands.length) return null;
-    // softmax over learned values
     const feats = cands.map((cd) => jobFeatures(c, cd.letter));
-    const vals = feats.map(jobValue);
+    const vals = feats.map((f) => jobValue(c.brain.w, f));
     const mx = Math.max(...vals);
     const exps = vals.map((v) => Math.exp((v - mx) / 0.25));
     const Z = exps.reduce((a, b) => a + b, 0);
@@ -363,8 +506,18 @@ async function init() {
       mode = homeCount > letters.length * 0.6 ? 'dismantle' : 'rebuild';
     }
 
-    // raid pacing
     if (!monster && --raidTimer <= 0) spawnMonster();
+
+    // reign bookkeeping + succession
+    if (elder.alive) {
+      learn.reign.steps++;
+      const r = learn.reign;
+      if (r.steps > 2700 + (learn.elder.ordinal % 3) * 450) endReign('age');
+      else if (r.steps > 900 && reignFitness(r) < -4) endReign('mercy');
+    } else if (interregnum > 0 && --interregnum <= 0) {
+      crownSuccessor();
+    }
+    if (ancestorGlow > 0) ancestorGlow--;
 
     function threatFor(c) {
       let best = cursor.active ? cursor : null;
@@ -376,8 +529,20 @@ async function init() {
       return best;
     }
 
-    // --- small castes ----------------------------------------------------------
+    // eggs
+    for (let i = eggs.length - 1; i >= 0; i--) {
+      const egg = eggs[i];
+      if (--egg.t <= 0) {
+        hatch(egg);
+        eggs.splice(i, 1);
+      }
+    }
+
+    // --- small castes -------------------------------------------------------------
     for (const c of critters) {
+      if (!c.alive) { c.fade = Math.max(0, c.fade - 0.02); continue; }
+      if (c.hatch > 0) c.hatch--;
+      if (++c.age > c.lifespan) { retire(c); continue; }
       if (c.job && !jobValid(c.job)) { c.job.letter.claimed = false; c.job = null; }
       if (c.throwCooldown > 0) c.throwCooldown--;
 
@@ -396,11 +561,8 @@ async function init() {
             y: monster.y + ((c.y - monster.y) / away) * 0.4,
           };
           if (away < 0.55 && c.throwCooldown <= 0) {
-            // LEARNED aim: lead the target by a learned number of steps,
-            // plus exploration noise the elder's rewards will shrink
             const L = letters[c.carrying];
             const lead = learn.aim.lead + randn() * learn.aim.sigma;
-            c.thrownLead = lead;
             const aim = { x: monster.x + monster.vx * lead, y: monster.y + monster.vy * lead };
             const dx = aim.x - c.x, dy = aim.y - c.y;
             const dl = Math.hypot(dx, dy) || 1;
@@ -415,7 +577,6 @@ async function init() {
             learn.aim.throws++;
           }
         } else if (c.carrying >= 0) {
-          // calm: stand guard near the middle with the ammo ready
           if (--c.wanderT <= 0) {
             c.wanderT = 120 + Math.random() * 120;
             c.wander = { x: (Math.random() * 2 - 1) * 0.4, y: (Math.random() * 2 - 1) * 0.4 };
@@ -432,7 +593,7 @@ async function init() {
       }
 
       const threat = c.role === 'worker' ? threatFor(c) : (cursor.active ? cursor : null);
-      steer(c, target, threat, 1);
+      steer(c, target, threat, c.hatch > 0 ? 0.7 : 1);
       const dtNow = Math.hypot(target.x - c.x, target.y - c.y);
 
       if (c.job && dtNow < 0.085) {
@@ -456,7 +617,9 @@ async function init() {
           L.claimed = false;
           L.owner = null;
           stats.delivered++;
-          rewardWorker(c, 1);
+          learn.reign.deliver++;
+          c.lifetimeDeliveries++;
+          rewardWorker(c, elder.genome.deliver);
           c.carrying = -1;
           c.job = null;
         }
@@ -466,7 +629,7 @@ async function init() {
       if (c.blink > 0) c.blink--;
     }
 
-    // --- monster -----------------------------------------------------------------
+    // --- monster --------------------------------------------------------------------
     if (monster) {
       const m = monster;
       if (m.flash > 0) m.flash--;
@@ -499,7 +662,7 @@ async function init() {
 
       if (m.cooldown <= 0 && m.target >= 0 && dt < 0.1) {
         const L = letters[m.target];
-        if (L.owner && L.owner.role === 'worker') rewardWorker(L.owner, -1.5);
+        if (L.owner && L.owner.role === 'worker') rewardWorker(L.owner, elder.genome.theft);
         if (L.at === 'home') L.span.style.visibility = 'hidden';
         L.at = 'eaten';
         L.claimed = false;
@@ -507,11 +670,12 @@ async function init() {
         m.belly.push(m.target);
         m.target = -1;
         m.cooldown = 100 + Math.random() * 80;
+        learn.reign.eaten++;
         stats.eaten++;
       }
     }
 
-    // --- projectiles: outcomes feed the aim learner --------------------------------
+    // --- projectiles: aim learning MODULATED BY THE REIGNING GENOME -----------------
     for (let i = projectiles.length - 1; i >= 0; i--) {
       const p = projectiles[i];
       p.x += p.vx; p.y += p.vy;
@@ -525,25 +689,31 @@ async function init() {
         const lp = toPx({ x: Math.max(-0.97, Math.min(0.97, p.x)), y: Math.max(-0.97, Math.min(0.97, p.y)) });
         L.pos = { x: lp.x, y: lp.y };
         L.angle = (Math.random() - 0.5) * 1.2;
-        if (outcome === 'hit') {
-          hitMonster();
-          learn.aim.hits++;
-          // pull the lead toward what just worked, calm the exploration
-          learn.aim.lead += 0.35 * (p.lead - learn.aim.lead);
-          learn.aim.sigma = Math.max(1, learn.aim.sigma * 0.9);
-          emitReward(p.thrower, 1);
-        } else {
-          learn.aim.sigma = Math.min(8, learn.aim.sigma * 1.05);
-          emitReward(p.thrower, -1);
+        if (outcome === 'hit') hitMonster();
+        if (elder.alive) {
+          // the elder's genome IS the learning signal: an elder that rewards
+          // hits teaches good aim; a mutant that punishes them teaches the
+          // opposite — and its reign fitness pays for it
+          const r = outcome === 'hit' ? elder.genome.hit : elder.genome.miss;
+          // one signed rule: positive verdicts ATTRACT the lead toward the
+          // value just used, negative verdicts REPEL it — under a sane elder
+          // hits attract and misses repel; under a mutant the arrows flip,
+          // aim degrades, and the reign's fitness pays for it
+          const k = 0.35 * Math.max(-1.5, Math.min(1.5, r)) * (outcome === 'hit' ? 1 : 0.3);
+          learn.aim.lead = Math.max(-3, Math.min(20, learn.aim.lead + k * (p.lead - learn.aim.lead)));
+          learn.aim.sigma = r > 0 ? Math.max(1, learn.aim.sigma * 0.92) : Math.min(8, learn.aim.sigma * 1.04);
+          emitReward(p.thrower, r);
         }
+        if (outcome === 'hit') learn.aim.hits++;
         learn.aim.recent.push(outcome === 'hit' ? 1 : 0);
         if (learn.aim.recent.length > 20) learn.aim.recent.shift();
         projectiles.splice(i, 1);
       }
     }
 
-    // --- elder: drift toward whatever just happened --------------------------------
-    {
+    // --- elder movement ---------------------------------------------------------------
+    if (elder.alive) {
+      elder.fade = Math.min(1, elder.fade + 0.02);
       let target;
       if (elder.interest) {
         target = elder.interest;
@@ -558,43 +728,45 @@ async function init() {
       steer(elder, target, null, 0.45);
       if (--elder.blinkT <= 0) { elder.blink = 6; elder.blinkT = 150 + Math.random() * 200; }
       if (elder.blink > 0) elder.blink--;
+    } else {
+      elder.fade = Math.max(0, elder.fade - 0.03);
     }
 
     if (statusEl) {
       const recent = learn.aim.recent;
       const rate = recent.length ? Math.round((recent.reduce((a, b) => a + b, 0) / recent.length) * 100) : null;
-      const aimTxt = learn.aim.throws
-        ? `slinger aim: lead ${learn.aim.lead.toFixed(1)} (${rate === null ? '—' : rate + '% of last ' + recent.length} · lifetime ${learn.aim.hits}/${learn.aim.throws})`
-        : 'slinger aim: untrained';
-      const raidTxt = monster ? 'RAID' : `next raid ~${Math.ceil(raidTimer / 30)}s`;
+      const fitNow = reignFitness(learn.reign);
+      const maxGen = Math.max(...critters.map((c) => c.brain.gen || 1), ...eggs.map((e) => e.gen));
+      const raidTxt = monster ? 'RAID' : `raid ~${Math.ceil(raidTimer / 30)}s`;
+      const reignTxt = elder.alive
+        ? `Elder ${roman(learn.elder.ordinal)} (${Math.round(learn.reign.steps / 30)}s, ${fitNow >= 0 ? '+' : ''}${fitNow.toFixed(1)}/min)`
+        : 'interregnum — the Ancestor deliberates';
       statusEl.textContent =
-        `${mode === 'dismantle' ? 'dismantling' : mode === 'rebuild' ? 'repairing' : 'resting'} · ${raidTxt} · ` +
-        `${aimTxt} · elder verdicts +${learn.elder.plus}/−${learn.elder.minus} · learning saved locally`;
+        `${mode === 'dismantle' ? 'dismantling' : mode === 'rebuild' ? 'repairing' : 'resting'} · ${raidTxt} · ${reignTxt} · ` +
+        `gen ${maxGen} kin · aim ${rate === null ? '—' : rate + '%'} · dynasty of ${learn.lineage.ancestors.length + 1} elders, saved locally`;
     }
   }
 
-  // --- drawing ---------------------------------------------------------------------
-  // rendered positions are smoothed so 30Hz steering reads as glide, not jitter
+  // --- drawing --------------------------------------------------------------------------
   function smooth(e) {
     const p = toPx(e);
     e.sx = e.sx === undefined ? p.x : e.sx + (p.x - e.sx) * 0.35;
     e.sy = e.sy === undefined ? p.y : e.sy + (p.y - e.sy) * 0.35;
     return { x: e.sx, y: e.sy };
   }
-
-  function drawEyes(p, look, blink, dark) {
+  function drawEyes(p, look, blink, dark, scale = 1) {
     for (const side of [-1, 1]) {
-      const ex = p.x + side * 3.4, ey = p.y - 2.5;
+      const ex = p.x + side * 3.4 * scale, ey = p.y - 2.5 * scale;
       ctx.fillStyle = '#fff';
       ctx.beginPath();
       if (blink > 0) {
-        ctx.fillRect(ex - 2, ey - 0.6, 4, 1.2);
+        ctx.fillRect(ex - 2 * scale, ey - 0.6, 4 * scale, 1.2);
       } else {
-        ctx.arc(ex, ey, 2.5, 0, Math.PI * 2);
+        ctx.arc(ex, ey, 2.5 * scale, 0, Math.PI * 2);
         ctx.fill();
         ctx.fillStyle = dark;
         ctx.beginPath();
-        ctx.arc(ex + look.x * 1.1, ey + look.y * 1.1, 1.25, 0, Math.PI * 2);
+        ctx.arc(ex + look.x * 1.1, ey + look.y * 1.1, 1.25 * scale, 0, Math.PI * 2);
       }
       ctx.fill();
     }
@@ -638,7 +810,6 @@ async function init() {
       if (--b.t <= 0) bursts.splice(i, 1);
     }
 
-    // reward sparks
     for (let i = sparks.length - 1; i >= 0; i--) {
       const s = sparks[i];
       s.y -= 0.5;
@@ -650,18 +821,37 @@ async function init() {
       if (--s.t <= 0) sparks.splice(i, 1);
     }
 
+    // eggs
+    for (const egg of eggs) {
+      const wob = Math.sin(now / 90) * (egg.t < 40 ? 2.2 : 0.7);
+      ctx.save();
+      ctx.translate(egg.x + wob * 0.4, egg.y);
+      ctx.rotate(wob * 0.03);
+      ctx.fillStyle = '#f5f5f4';
+      ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 5.5, 7, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = egg.color;
+      ctx.globalAlpha = 0.5;
+      ctx.beginPath();
+      ctx.arc(-1.5, -1, 1.2, 0, Math.PI * 2);
+      ctx.arc(2, 2, 0.9, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
     if (monster) {
       const m = monster;
       const p = smooth(m);
       const speed = Math.hypot(m.vx, m.vy);
       const ang = Math.atan2(m.vy, m.vx);
       const r = 13 + Math.min(5, m.belly.length * 0.5);
-
       ctx.fillStyle = 'rgba(0,0,0,0.2)';
       ctx.beginPath();
       ctx.ellipse(p.x, p.y + r * 0.72, r * 0.85, 3.2, 0, 0, Math.PI * 2);
       ctx.fill();
-
       ctx.save();
       ctx.translate(p.x, p.y);
       ctx.fillStyle = m.flash > 0 ? '#ede9fe' : '#7c3aed';
@@ -698,7 +888,6 @@ async function init() {
       ctx.ellipse(0, r * 0.35, r * 0.32, r * 0.08 + m.mouth * r * 0.3, 0, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
-
       for (let i = 0; i < m.hits; i++) {
         ctx.fillStyle = '#fbbf24';
         ctx.beginPath();
@@ -708,17 +897,19 @@ async function init() {
     }
 
     for (const c of critters) {
+      if (!c.alive && c.fade <= 0) continue;
       const p = smooth(c);
       const speed = Math.hypot(c.vx, c.vy);
       const ang = Math.atan2(c.vy, c.vx);
+      const grow = c.hatch > 0 ? 1 - (c.hatch / 90) * 0.45 : 1;
       const squash = Math.min(0.2, speed * 6);
-      // bob only while idling — moving critters glide
       const idle = Math.max(0, 1 - speed * 30);
       const bob = Math.sin(now / 260 + c.seed) * 0.8 * idle;
+      ctx.globalAlpha = c.alive ? 1 : c.fade;
 
       ctx.fillStyle = 'rgba(0,0,0,0.16)';
       ctx.beginPath();
-      ctx.ellipse(p.x, p.y + 8, 7.5, 2.6, 0, 0, Math.PI * 2);
+      ctx.ellipse(p.x, p.y + 8 * grow, 7.5 * grow, 2.6, 0, 0, Math.PI * 2);
       ctx.fill();
 
       ctx.save();
@@ -726,19 +917,19 @@ async function init() {
       ctx.rotate(ang * Math.min(1, speed * 40));
       ctx.fillStyle = c.color;
       ctx.beginPath();
-      ctx.ellipse(0, 0, 8 * (1 + squash), 8 * (1 - squash * 0.6), 0, 0, Math.PI * 2);
+      ctx.ellipse(0, 0, 8 * grow * (1 + squash), 8 * grow * (1 - squash * 0.6), 0, 0, Math.PI * 2);
       ctx.fill();
       if (c.role === 'slinger') {
         ctx.strokeStyle = 'rgba(120,53,15,0.85)';
         ctx.lineWidth = 2.2;
         ctx.beginPath();
-        ctx.arc(0, 0, 7.4, -2.6, -0.5);
+        ctx.arc(0, 0, 7.4 * grow, -2.6, -0.5);
         ctx.stroke();
       }
       ctx.restore();
 
       const look = speed > 0.004 ? { x: Math.cos(ang), y: Math.sin(ang) } : { x: 0, y: 0.3 };
-      drawEyes({ x: p.x, y: p.y + bob }, look, c.blink, '#1e1b4b');
+      drawEyes({ x: p.x, y: p.y + bob }, look, c.blink, '#1e1b4b', grow);
 
       if (c.carrying >= 0) {
         const L = letters[c.carrying];
@@ -749,14 +940,16 @@ async function init() {
         ctx.fillText(L.ch, 0, 0);
         ctx.restore();
       }
+      ctx.globalAlpha = 1;
     }
 
-    // the elder: bigger, ivory, crowned
-    {
+    // the elder (fades through successions)
+    if (elder.fade > 0.01) {
       const p = smooth(elder);
       const speed = Math.hypot(elder.vx, elder.vy);
       const ang = Math.atan2(elder.vy, elder.vx);
       const bob = Math.sin(now / 320) * 0.7;
+      ctx.globalAlpha = elder.fade;
       ctx.fillStyle = 'rgba(0,0,0,0.16)';
       ctx.beginPath();
       ctx.ellipse(p.x, p.y + 10, 9.5, 3, 0, 0, Math.PI * 2);
@@ -767,7 +960,6 @@ async function init() {
       ctx.beginPath();
       ctx.ellipse(0, 0, 10.5, 9.5, 0, 0, Math.PI * 2);
       ctx.fill();
-      // crown
       ctx.fillStyle = '#fbbf24';
       ctx.beginPath();
       ctx.moveTo(-6, -8);
@@ -782,10 +974,42 @@ async function init() {
       ctx.restore();
       const look = speed > 0.003 ? { x: Math.cos(ang), y: Math.sin(ang) } : { x: 0, y: 0.2 };
       drawEyes({ x: p.x, y: p.y + bob + 1 }, look, elder.blink, '#44403c');
+      ctx.globalAlpha = 1;
+    }
+
+    // the Ancestor's apparition during successions: vast, faint, brief
+    if (ancestorGlow > 0) {
+      const a = Math.sin((ancestorGlow / 140) * Math.PI) * 0.18;
+      ctx.globalAlpha = a;
+      ctx.fillStyle = '#a8a29e';
+      ctx.beginPath();
+      ctx.ellipse(W / 2, H * 0.4, 46, 40, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#fbbf24';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(W / 2 - 20, H * 0.4 - 36);
+      ctx.lineTo(W / 2 - 20, H * 0.4 - 48);
+      ctx.lineTo(W / 2 - 10, H * 0.4 - 40);
+      ctx.lineTo(W / 2, H * 0.4 - 52);
+      ctx.lineTo(W / 2 + 10, H * 0.4 - 40);
+      ctx.lineTo(W / 2 + 20, H * 0.4 - 48);
+      ctx.lineTo(W / 2 + 20, H * 0.4 - 36);
+      ctx.stroke();
+      // closed, ancient eyes
+      ctx.strokeStyle = '#57534e';
+      ctx.lineWidth = 2.5;
+      for (const s of [-1, 1]) {
+        ctx.beginPath();
+        ctx.moveTo(W / 2 + s * 16 - 7, H * 0.4 - 6);
+        ctx.quadraticCurveTo(W / 2 + s * 16, H * 0.4 - 1, W / 2 + s * 16 + 7, H * 0.4 - 6);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
     }
   }
 
-  // --- loop ------------------------------------------------------------------------
+  // --- loop ----------------------------------------------------------------------------
   const STEP_MS = 33;
   let last = 0, running = true;
   document.addEventListener('visibilitychange', () => { running = !document.hidden; });
