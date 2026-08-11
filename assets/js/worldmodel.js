@@ -58,12 +58,38 @@
   // token is zeroed. So in guided mode the on-screen correction is the
   // network's own output, not post-processing.
   const NO_TOKEN = [0, 0, 0, 0, 0];
+  // Returns the next state AND the behavior prior: the network's predicted
+  // distribution over the NEXT action (outputs 4..8, trained by one-hot
+  // regression — see train.js). Sampling from it lets a ball play itself.
   function modelStep(state, action, token) {
     const onehot = new Array(N_ACTIONS).fill(0);
     onehot[action] = 1;
     const tokenInput = token ? [...token, 1] : NO_TOKEN;
-    const delta = forward([...state, ...onehot, ...tokenInput]);
-    return [state[0] + delta[0], state[1] + delta[1], state[2] + delta[2], state[3] + delta[3]];
+    const o = forward([...state, ...onehot, ...tokenInput]);
+    return {
+      state: [state[0] + o[0], state[1] + o[1], state[2] + o[2], state[3] + o[3]],
+      actionOut: o.slice(4, 4 + N_ACTIONS),
+    };
+  }
+
+  // Clamp negatives, renormalize, sample — scale-invariant, so the tiny
+  // training-target scale cancels out here. Two inference-time shaping
+  // knobs for the wanderers: exclude "none" (they never just coast — the
+  // raw prior under-thrusts and the ring contracts under the pull) and
+  // square the probabilities (sharpen toward the mode for longer runs).
+  function sampleAction(actionOut, noIdle, sharpen) {
+    let z = 0;
+    const p = [];
+    for (let a = 0; a < N_ACTIONS; a++) {
+      let v = Math.max(0, actionOut[a]);
+      if (noIdle && a === 0) v = 0;
+      if (sharpen) v = v * v;
+      p.push(v); z += v;
+    }
+    if (z <= 1e-9) return noIdle ? 1 + Math.floor(Math.random() * (N_ACTIONS - 1)) : Math.floor(Math.random() * N_ACTIONS);
+    let r = Math.random() * z;
+    for (let a = 0; a < N_ACTIONS; a++) { r -= p[a]; if (r <= 0) return a; }
+    return N_ACTIONS - 1;
   }
 
   // --- input ---------------------------------------------------------------
@@ -118,15 +144,27 @@
   // interpolated partway toward the target scales the pull by the same
   // fraction — "follow slowly" for free.
   let mode = 'solo';
-  const FOLLOW_STRENGTH = 0.7;
+  const FOLLOW_STRENGTH = 0.5;
   const TRAIL_LEN = 45;
   const CYCLE_STARTS = [[-0.5, 0, 0, 0], [0.5, 0.3, 0, 0], [0, -0.5, 0, 0]];
   let balls = [], trails = [];
-  const cycleActs = [0, 0, 0], cycleHolds = [0, 0, 0];
+  // Every ball's action comes from the model's own behavior prior — the
+  // wanderers always, and the player's ball whenever no key is held
+  // (autopilot: grab it any time to take over). Two implementation notes,
+  // both found empirically:
+  //  - The policy is read from a second, UNCONDITIONED forward pass: the
+  //    flag=1 action head was trained largely on uniform targets (the
+  //    guidance dataset has no real next-actions), so the conditioned
+  //    policy is jitter; the sticky learned behavior lives at flag=0.
+  //  - A sampled action is held for ACTION_HOLD steps: the per-step head
+  //    can't carry temporal persistence (memoryless), and without holds
+  //    the ring contracts into a clump under the follow pull.
+  const ACTION_HOLD = 8;
+  const cycleActs = [0, 0, 0], cycleCool = [0, 0, 0];
   function resetCycle() {
     balls = CYCLE_STARTS.map((s) => s.slice());
     trails = [[], [], []];
-    for (let i = 0; i < 3; i++) { cycleActs[i] = 0; cycleHolds[i] = 0; }
+    for (let i = 0; i < 3; i++) { cycleActs[i] = 0; cycleCool[i] = 0; }
   }
   function clampState(s) {
     // safety net so a coupling surprise can't fling a ball to infinity
@@ -269,19 +307,10 @@
     // trained.
     const token = guidance ? truthState : null;
     truthState = physicsStep(truthState, currentAction);
-    modelState = modelStep(modelState, currentAction, token);
+    modelState = modelStep(modelState, currentAction, token).state;
   }
 
   function stepCycle() {
-    // Non-player balls wander with sticky random actions (hold a "key" for
-    // 0.5-1.5s, like a human would).
-    for (let i = 1; i < 3; i++) {
-      if (cycleHolds[i] <= 0) {
-        cycleActs[i] = Math.floor(Math.random() * N_ACTIONS);
-        cycleHolds[i] = 10 + Math.floor(Math.random() * 20);
-      }
-      cycleHolds[i]--;
-    }
     // Token for ball i = partway toward ball i+1's current state.
     const tokens = balls.map((b, i) => {
       const target = balls[(i + 1) % 3];
@@ -292,8 +321,20 @@
         b[3] + FOLLOW_STRENGTH * (target[3] - b[3]),
       ];
     });
-    balls = balls.map((b, i) =>
-      clampState(modelStep(b, i === 0 ? currentAction : cycleActs[i], tokens[i])));
+    // Player keys override ball 0; otherwise every ball drives itself with
+    // the model's predicted next action (sampled from the unconditioned
+    // pass, held for ACTION_HOLD steps — see notes above).
+    const playerDriving = held.size > 0;
+    balls = balls.map((b, i) => {
+      const action = (i === 0 && playerDriving) ? currentAction : cycleActs[i];
+      const r = modelStep(b, action, tokens[i]);
+      if (--cycleCool[i] <= 0) {
+        const prior = modelStep(b, action, null);
+        cycleActs[i] = sampleAction(prior.actionOut, true, true);
+        cycleCool[i] = ACTION_HOLD;
+      }
+      return clampState(r.state);
+    });
     for (let i = 0; i < 3; i++) {
       trails[i].push([balls[i][0], balls[i][1]]);
       if (trails[i].length > TRAIL_LEN) trails[i].shift();

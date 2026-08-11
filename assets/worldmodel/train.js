@@ -46,28 +46,43 @@ function randn() {
 // Dataset: rollout episodes with "sticky" random actions (hold a key for a
 // few steps, like a real user would) so the model sees realistic transitions.
 // ---------------------------------------------------------------------------
+// Sticky random action sequence: hold a "key" for 1-12 steps like a human.
+function stickyActions(steps) {
+  const seq = [];
+  let action = 0, hold = 0;
+  for (let t = 0; t < steps; t++) {
+    if (hold <= 0) {
+      action = Math.floor(Math.random() * N_ACTIONS);
+      hold = 1 + Math.floor(Math.random() * 12);
+    }
+    hold--;
+    seq.push(action);
+  }
+  return seq;
+}
+
 function buildDataset(nEpisodes, stepsPerEpisode) {
-  const X = []; // [x,y,vx,vy, onehot(action)] length 9
-  const Y = []; // delta state length 4
+  const X = []; // [x,y,vx,vy, onehot(action), token(4), flag(1)] length 14
+  const Y = []; // [delta state(4), next-action onehot(N_ACTIONS)] length 9
   for (let e = 0; e < nEpisodes; e++) {
     let state = [
       (Math.random() * 2 - 1) * 0.8,
       (Math.random() * 2 - 1) * 0.8,
       0, 0,
     ];
-    let action = 0;
-    let holdRemaining = 0;
+    // Precompute the episode's action sequence so every step also knows the
+    // NEXT action — that's the behavior-prior target. (Sticky actions make
+    // it learnable: mostly "keep holding", occasionally "switch".)
+    const acts = stickyActions(stepsPerEpisode + 1);
     for (let t = 0; t < stepsPerEpisode; t++) {
-      if (holdRemaining <= 0) {
-        action = Math.floor(Math.random() * N_ACTIONS);
-        holdRemaining = 1 + Math.floor(Math.random() * 12);
-      }
-      holdRemaining--;
+      const action = acts[t];
       const next = physicsStep(state, action);
       const onehot = new Array(N_ACTIONS).fill(0);
       onehot[action] = 1;
+      const nextOnehot = new Array(N_ACTIONS).fill(0);
+      nextOnehot[acts[t + 1]] = ACTION_TARGET_SCALE;
       X.push([...state, ...onehot, ...NO_ANCHOR]);
-      Y.push([next[0] - state[0], next[1] - state[1], next[2] - state[2], next[3] - state[3]]);
+      Y.push([next[0] - state[0], next[1] - state[1], next[2] - state[2], next[3] - state[3], ...nextOnehot]);
       state = next;
     }
   }
@@ -78,11 +93,14 @@ function buildDataset(nEpisodes, stepsPerEpisode) {
   // the origin that snowballs every frame into a runaway drift *before the
   // user has even pressed a key* — which reads as broken rather than the
   // "gradual drift under play" this demo is actually trying to show.
+  // These synthetic examples have no real "next action", so their action
+  // target is the uniform distribution — the honest conditional mean of a
+  // fresh random draw, contributing no bias to the behavior prior.
   for (let i = 0; i < 30000; i++) {
     const x = (Math.random() * 2 - 1) * 0.95;
     const y = (Math.random() * 2 - 1) * 0.95;
     X.push([x, y, 0, 0, 1, 0, 0, 0, 0, ...NO_ANCHOR]); // action=none onehot
-    Y.push([0, 0, 0, 0]);
+    Y.push([0, 0, 0, 0, ...UNIFORM_ACTION]);
   }
   // Also anchor low-velocity decay-toward-rest under action=none, across a
   // spread of small velocities, so the model learns friction contracts
@@ -98,7 +116,7 @@ function buildDataset(nEpisodes, stepsPerEpisode) {
     const vy = (Math.random() < 0.5 ? -1 : 1) * magY;
     const next = physicsStep([x, y, vx, vy], 0);
     X.push([x, y, vx, vy, 1, 0, 0, 0, 0, ...NO_ANCHOR]);
-    Y.push([next[0] - x, next[1] - y, next[2] - vx, next[3] - vy]);
+    Y.push([next[0] - x, next[1] - y, next[2] - vx, next[3] - vy, ...UNIFORM_ACTION]);
   }
 
   return { X, Y };
@@ -117,7 +135,21 @@ const CONF_DIM = 1;
 const NO_ANCHOR = [0, 0, 0, 0, 0]; // token(4) + flag(1), all zero
 const IN = 4 + N_ACTIONS + ANCHOR_DIM + CONF_DIM; // 14
 const HIDDEN = 96;
-const OUT = 4;
+// Output = state delta (4) + a behavior prior: a distribution over the NEXT
+// action (N_ACTIONS), regressed against one-hots with the same MSE loss —
+// MSE against one-hot labels converges to the conditional class
+// probabilities, so sampling from the (clamped, renormalized) head gives a
+// learned policy. It's trained on the same sticky-random play data, so it
+// predicts how a player behaves: mostly keep holding the current key,
+// sometimes switch. That lets a ball keep playing itself.
+const OUT = 4 + N_ACTIONS; // 9
+// Action targets are scaled way down so the single MSE loss isn't dominated
+// by them: raw one-hots (~1.0) dwarf state deltas (~0.01) squared-error-wise
+// and would trade away dynamics precision. Sampling at inference clamps and
+// renormalizes the head, so the scale cancels out exactly.
+const ACTION_TARGET_SCALE = 0.02;
+// Honest action target for synthetic examples that have no real next action.
+const UNIFORM_ACTION = new Array(N_ACTIONS).fill(ACTION_TARGET_SCALE / N_ACTIONS);
 
 function zeros(n) { return new Float64Array(n); }
 function randMat(rows, cols, scale) {
@@ -287,17 +319,17 @@ function selfForcingBatch(model, nEpisodes, stepsPerEpisode) {
       fixedAction = 1 + Math.floor(Math.random() * (N_ACTIONS - 1)); // long single-direction hold
     }
 
-    let action = 0, holdRemaining = 0;
+    // Precompute the action sequence (one extra for next-action targets).
+    const acts = fixedAction >= 0
+      ? new Array(episodeLen + 1).fill(fixedAction)
+      : stickyActions(episodeLen + 1);
+
     for (let t = 0; t < episodeLen; t++) {
-      if (fixedAction >= 0) {
-        action = fixedAction;
-      } else if (holdRemaining <= 0) {
-        action = Math.floor(Math.random() * N_ACTIONS);
-        holdRemaining = 1 + Math.floor(Math.random() * 12);
-      }
-      holdRemaining--;
+      const action = acts[t];
       const onehot = new Array(N_ACTIONS).fill(0);
       onehot[action] = 1;
+      const nextOnehot = new Array(N_ACTIONS).fill(0);
+      nextOnehot[acts[t + 1]] = ACTION_TARGET_SCALE;
 
       // The "correct" thing to do from wherever the model actually is now.
       const trueNext = physicsStep(modelState, action);
@@ -305,11 +337,16 @@ function selfForcingBatch(model, nEpisodes, stepsPerEpisode) {
       Y.push([
         trueNext[0] - modelState[0], trueNext[1] - modelState[1],
         trueNext[2] - modelState[2], trueNext[3] - modelState[3],
+        ...nextOnehot,
       ]);
 
       // Advance using the MODEL's own prediction, not ground truth — this
-      // is what makes it self-forcing rather than teacher-forced.
-      const delta = forward(model, [...modelState, ...onehot]);
+      // is what makes it self-forcing rather than teacher-forced. (The
+      // input must be the FULL 14 dims incl. the zeroed token: an earlier
+      // version passed 9 and the missing entries read as undefined -> NaN,
+      // which the ReLU silently flushed to 0 — the "rollout" was advancing
+      // by the output biases alone.)
+      const delta = forward(model, [...modelState, ...onehot, ...NO_ANCHOR]);
       modelState = [
         modelState[0] + delta[0], modelState[1] + delta[1],
         modelState[2] + delta[2], modelState[3] + delta[3],
@@ -408,7 +445,7 @@ function buildGuidanceDataset(n) {
       (ownNext[k] - ownState[k]) + PULL_RATE * (trueState[k] - ownState[k]));
 
     X.push([...ownState, ...onehot, ...trueState, 1]);
-    Y.push(target);
+    Y.push([...target, ...UNIFORM_ACTION]); // single transitions: no real next action
   }
   return { X, Y };
 }
@@ -525,6 +562,38 @@ function main() {
       totalDrift += d; maxDrift = Math.max(maxDrift, d);
     }
     console.log(`Sticky-random play, 300 steps, learned token guidance: avg=${(totalDrift / 300).toFixed(4)} max=${maxDrift.toFixed(4)}`);
+  }
+
+  // Sanity check 5: the behavior prior. Sample actions from the head and let
+  // a ball play ITSELF (unguided) for 600 steps: it should keep moving
+  // (mean speed well above zero), roam a good chunk of the box, and hold
+  // actions stickily (P(keep) near the data's ~0.87) rather than jittering.
+  {
+    let state = [0, 0, 0, 0];
+    let action = 0;
+    let sameCount = 0, moveSum = 0;
+    let minX = 1, maxX = -1, minY = 1, maxY = -1;
+    for (let t = 0; t < 600; t++) {
+      const onehot = new Array(N_ACTIONS).fill(0);
+      onehot[action] = 1;
+      const o = forward(model, [...state, ...onehot, ...NO_ANCHOR]);
+      state = [state[0] + o[0], state[1] + o[1], state[2] + o[2], state[3] + o[3]];
+      moveSum += Math.hypot(o[0], o[1]);
+      minX = Math.min(minX, state[0]); maxX = Math.max(maxX, state[0]);
+      minY = Math.min(minY, state[1]); maxY = Math.max(maxY, state[1]);
+      // sample next action from the clamped, renormalized head
+      const probs = [];
+      let z = 0;
+      for (let a = 0; a < N_ACTIONS; a++) { const p = Math.max(0, o[4 + a]); probs.push(p); z += p; }
+      let nextAction = Math.floor(Math.random() * N_ACTIONS);
+      if (z > 1e-9) {
+        let r = Math.random() * z;
+        for (let a = 0; a < N_ACTIONS; a++) { r -= probs[a]; if (r <= 0) { nextAction = a; break; } }
+      }
+      if (nextAction === action) sameCount++;
+      action = nextAction;
+    }
+    console.log(`Behavior prior, 600-step autonomous rollout: mean speed=${(moveSum / 600).toFixed(4)} roamX=${(maxX - minX).toFixed(2)} roamY=${(maxY - minY).toFixed(2)} P(keep action)=${(sameCount / 600).toFixed(2)}`);
   }
 
   const out = {
