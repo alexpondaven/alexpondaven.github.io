@@ -131,4 +131,7 @@
 }
 </style>
 
-<script src="{{ '/assets/js/worldmodel.js' | relative_url }}" defer></script>
+<!-- Cache-buster: GitHub Pages serves assets with a ~10 min cache and
+     browsers hold on to same-URL scripts, so stale demo code kept showing
+     after deploys. Bump the version whenever worldmodel.js changes. -->
+<script src="{{ '/assets/js/worldmodel.js' | relative_url }}?v=2" defer></script>

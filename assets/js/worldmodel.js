@@ -118,7 +118,7 @@
   // interpolated partway toward the target scales the pull by the same
   // fraction — "follow slowly" for free.
   let mode = 'solo';
-  const FOLLOW_STRENGTH = 0.4;
+  const FOLLOW_STRENGTH = 0.7;
   const TRAIL_LEN = 45;
   const CYCLE_STARTS = [[-0.5, 0, 0, 0], [0.5, 0.3, 0, 0], [0, -0.5, 0, 0]];
   let balls = [], trails = [];
