@@ -50,15 +50,16 @@
     return o;
   }
 
-  // anchor: null for "no correction", or a real [x,y,vx,vy] state the model
-  // was trained to trust when paired with confidence=1. See train.js's
-  // buildGroundingDataset for how that trust was taught.
+  // The weights also contain a learned "anchor" input (train.js Phase 3): a
+  // state the network snaps toward when passed with confidence 1. We don't
+  // drive it here — a net this small learns that gate as all-or-nothing, so
+  // using it looks like teleporting. The demo keeps it zeroed and applies
+  // guidance as a state blend instead (see GUIDE_RATE below).
   const NO_ANCHOR = [0, 0, 0, 0, 0];
-  function modelStep(state, action, anchor) {
+  function modelStep(state, action) {
     const onehot = new Array(N_ACTIONS).fill(0);
     onehot[action] = 1;
-    const anchorInput = anchor ? [...anchor, 1] : NO_ANCHOR;
-    const delta = forward([...state, ...onehot, ...anchorInput]);
+    const delta = forward([...state, ...onehot, ...NO_ANCHOR]);
     return [state[0] + delta[0], state[1] + delta[1], state[2] + delta[2], state[3] + delta[3]];
   }
 
@@ -95,15 +96,16 @@
   let truthState = [0, 0, 0, 0];
   let showTruth = false;
   let running = true;
-  let grounding = true; // periodic correction pulses, on by default
-  let stepsSinceGround = 0;
-  let flashUntil = 0; // ms timestamp; draw() shows a brief ring while flashing
+  let guidance = true; // continuous soft correction, on by default
 
-  // Every GROUND_PERIOD model steps, feed the real physics state back in as
-  // a trusted "anchor" — the network was explicitly trained to snap toward
-  // it (see train.js). Between pulses it's a normal, uncorrected rollout, so
-  // real drift still happens; this just stops it from running away forever.
-  const GROUND_PERIOD = 15;
+  // Soft guidance: before each model step, blend the model's state a small
+  // fraction toward the true trajectory — all four components, so the
+  // correction carries velocity along with position instead of teleporting
+  // the ball. The rollout stays autoregressive and still visibly drifts;
+  // the rate sets the equilibrium: roughly (per-step model error) / rate.
+  // Measured with rate 0.08: max per-step movement matches natural motion
+  // (no visible snapping), idle stays calm, and play drift stays visible.
+  const GUIDE_RATE = 0.08;
 
   const toggleBtn = document.getElementById('wm-toggle-truth');
   const groundBtn = document.getElementById('wm-toggle-ground');
@@ -120,16 +122,15 @@
   }
   if (groundBtn) {
     groundBtn.addEventListener('click', () => {
-      grounding = !grounding;
-      groundBtn.textContent = grounding ? 'Grounding: on' : 'Grounding: off';
-      groundBtn.setAttribute('aria-pressed', String(grounding));
+      guidance = !guidance;
+      groundBtn.textContent = guidance ? 'Guidance: on' : 'Guidance: off';
+      groundBtn.setAttribute('aria-pressed', String(guidance));
     });
   }
   if (resetBtn) {
     resetBtn.addEventListener('click', () => {
       modelState = [0, 0, 0, 0];
       truthState = [0, 0, 0, 0];
-      stepsSinceGround = 0;
     });
   }
 
@@ -158,15 +159,6 @@
     }
 
     const [mx, my] = toPixel(modelState[0], modelState[1], w, h);
-    if (performance.now() < flashUntil) {
-      ctx.strokeStyle = accent();
-      ctx.globalAlpha = 0.5;
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.arc(mx, my, 16, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.globalAlpha = 1;
-    }
     ctx.fillStyle = accent();
     ctx.beginPath();
     ctx.arc(mx, my, 10, 0, Math.PI * 2);
@@ -201,19 +193,18 @@
       if (now - lastStepTime >= STEP_INTERVAL_MS) {
         lastStepTime = now;
 
-        // Anchor must be the true state at the SAME timestep as modelState
-        // (before this step's transition) — that's what the network was
-        // trained on. Capture it before advancing truthState.
-        stepsSinceGround++;
-        const pulse = grounding && stepsSinceGround >= GROUND_PERIOD;
-        const anchor = pulse ? truthState : null;
-        if (pulse) {
-          stepsSinceGround = 0;
-          flashUntil = now + 220;
+        // Blend against the true state at the SAME timestep as modelState,
+        // i.e. before either advances.
+        if (guidance) {
+          modelState = [
+            modelState[0] + GUIDE_RATE * (truthState[0] - modelState[0]),
+            modelState[1] + GUIDE_RATE * (truthState[1] - modelState[1]),
+            modelState[2] + GUIDE_RATE * (truthState[2] - modelState[2]),
+            modelState[3] + GUIDE_RATE * (truthState[3] - modelState[3]),
+          ];
         }
-
         truthState = physicsStep(truthState, currentAction);
-        modelState = modelStep(modelState, currentAction, anchor);
+        modelState = modelStep(modelState, currentAction);
       }
       draw();
     }

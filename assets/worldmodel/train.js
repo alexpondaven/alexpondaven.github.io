@@ -334,21 +334,55 @@ function selfForcingBatch(model, nEpisodes, stepsPerEpisode) {
 //     had drifted there on its own). The target blends between "keep
 //     drifting from where I am" and "snap toward what the anchor says
 //     reality actually is," weighted by confidence.
-// At inference we exploit this honestly: we already simulate real physics
-// every frame anyway (to draw the ground-truth overlay), so periodically we
-// feed that real state in as the anchor with confidence=1 — a deliberate,
-// visible correction pulse, not a silent swap to ground truth every frame
-// (which would remove the autoregressive drift entirely and defeat the
-// point of the demo).
+// Honest outcome: this mechanism trains, but not the way it was designed
+// to. At ~1,800 parameters the network never learns a PROPORTIONAL pull —
+// across two attempts (uniform confidence sampling, then sampling heavily
+// biased toward low confidence) it collapses to an all-or-nothing gate:
+// conf >= ~0.5 snaps hard toward the anchor, conf <= ~0.3 does nothing.
+// The snap works (verified by probes and the sanity checks below), but a
+// snap looks like teleporting, and applying it in small frequent doses
+// suppressed the drift so completely the demo lost its point. So the
+// browser demo leaves the anchor input zeroed and applies soft guidance
+// as a plain state blend outside the network instead (GUIDE_RATE in
+// assets/js/worldmodel.js) — which carries velocity exactly and moves the
+// ball no faster than its natural motion. The gate remains in the shipped
+// weights as a documented, tested capability.
+// Anchor states must cover the velocities real play actually produces
+// (terminal speed under a held key is ~0.19, plus sign flips at wall
+// bounces). The first version sampled anchor velocities only in ±0.05, so
+// at speed the velocity part of the correction was out-of-distribution:
+// the model snapped position but dropped the anchor's motion. Drawing half
+// the anchors from genuine physics rollouts fixes the velocity carryover.
+function collectManifoldStates(n) {
+  const states = [];
+  let s = [(Math.random() * 2 - 1) * 0.8, (Math.random() * 2 - 1) * 0.8, 0, 0];
+  let action = 0, hold = 0;
+  while (states.length < n) {
+    if (hold <= 0) { action = Math.floor(Math.random() * N_ACTIONS); hold = 1 + Math.floor(Math.random() * 15); }
+    hold--;
+    s = physicsStep(s, action);
+    states.push(s.slice());
+    if (Math.random() < 0.005) { // occasional episode reset for coverage
+      s = [(Math.random() * 2 - 1) * 0.8, (Math.random() * 2 - 1) * 0.8, 0, 0];
+    }
+  }
+  return states;
+}
+
 function buildGroundingDataset(n) {
   const X = [], Y = [];
+  const manifold = collectManifoldStates(Math.ceil(n / 2));
   for (let i = 0; i < n; i++) {
-    const trueState = [
-      (Math.random() * 2 - 1) * 0.95,
-      (Math.random() * 2 - 1) * 0.95,
-      (Math.random() * 2 - 1) * 0.05,
-      (Math.random() * 2 - 1) * 0.05,
-    ];
+    // Half on-manifold rollout states (realistic velocity/position combos,
+    // bounces included), half uniform draws for coverage.
+    const trueState = (i % 2 === 0)
+      ? manifold[Math.floor(Math.random() * manifold.length)].slice()
+      : [
+          (Math.random() * 2 - 1) * 0.95,
+          (Math.random() * 2 - 1) * 0.95,
+          (Math.random() * 2 - 1) * 0.2,
+          (Math.random() * 2 - 1) * 0.2,
+        ];
     const action = Math.floor(Math.random() * N_ACTIONS);
     const onehot = new Array(N_ACTIONS).fill(0);
     onehot[action] = 1;
@@ -357,12 +391,21 @@ function buildGroundingDataset(n) {
     // Simulate "the model thinks it's somewhere else" — a displaced own
     // state, independent of confidence, so confidence must be read from its
     // own explicit input rather than inferred from how displaced things look.
-    const noise = () => (Math.random() * 2 - 1) * (Math.random() < 0.5 ? 0.15 : 0.7);
+    // Velocity displacement spans the full realistic range so corrections
+    // are learned for badly-wrong motion too, not just wrong position.
+    const posNoise = () => (Math.random() * 2 - 1) * (Math.random() < 0.5 ? 0.15 : 0.7);
+    const velNoise = () => (Math.random() * 2 - 1) * (Math.random() < 0.5 ? 0.03 : 0.2);
     const ownState = [
-      trueState[0] + noise(), trueState[1] + noise(),
-      trueState[2] + noise() * 0.1, trueState[3] + noise() * 0.1,
+      trueState[0] + posNoise(), trueState[1] + posNoise(),
+      trueState[2] + velNoise(), trueState[3] + velNoise(),
     ];
-    const confidence = Math.random(); // continuous, so inference can pick any pull strength
+    // Continuous, so inference can pick any pull strength — but biased
+    // heavily toward the low end. With plain uniform sampling the network
+    // learned a binary gate (conf>0.5 snaps, conf<0.2 does nothing at all):
+    // the low-conf targets differ from ordinary drift by so little that the
+    // proportional response there never got enough gradient signal, and
+    // low-conf is exactly the regime continuous soft guidance runs in.
+    const confidence = Math.random() < 0.5 ? Math.random() * 0.3 : Math.random();
 
     const ownNext = physicsStep(ownState, action);
     const driftTarget = [
@@ -454,10 +497,10 @@ function main() {
     console.log(`Mean drift over 100-step "hold right" rollout, no grounding: ${(totalDrift / 100).toFixed(4)}`);
   }
 
-  // Sanity check 3: same idle scenario, but with a full-confidence grounding
-  // pulse every GROUND_PERIOD steps — the exact cadence the browser demo
-  // uses (keep in sync with GROUND_PERIOD in assets/js/worldmodel.js). This
-  // should show a clearly bounded, much smaller drift than sanity check 1.
+  // Sanity check 3: same idle scenario, exercising the LEARNED anchor gate —
+  // a full-confidence pulse every GROUND_PERIOD steps. The browser demo
+  // doesn't drive this input (see the honest-outcome note above; it uses a
+  // state blend instead), but the gate ships in the weights, so verify it.
   const GROUND_PERIOD = 15;
   {
     let state = [0, 0, 0, 0];
@@ -496,6 +539,33 @@ function main() {
       totalDrift += d; maxDrift = Math.max(maxDrift, d);
     }
     console.log(`Sticky-random play, 300 steps, WITH periodic grounding: avg=${(totalDrift / 300).toFixed(4)} max=${maxDrift.toFixed(4)}`);
+  }
+
+  // Sanity check 5: what the browser demo actually ships — soft guidance as
+  // a state blend toward the true trajectory before each step (keep
+  // GUIDE_RATE in sync with assets/js/worldmodel.js). Drift should be
+  // bounded but still clearly nonzero, and per-step movement never larger
+  // than natural motion.
+  {
+    const GUIDE_RATE = 0.08;
+    let state = [0, 0, 0, 0];
+    let modelState = [0, 0, 0, 0];
+    let action = 0, hold = 0;
+    let totalDrift = 0, maxDrift = 0;
+    for (let t = 0; t < 300; t++) {
+      if (hold <= 0) { action = Math.floor(Math.random() * N_ACTIONS); hold = 1 + Math.floor(Math.random() * 15); }
+      hold--;
+      for (let k = 0; k < 4; k++) modelState[k] += GUIDE_RATE * (state[k] - modelState[k]);
+      state = physicsStep(state, action);
+      const onehot = new Array(N_ACTIONS).fill(0);
+      onehot[action] = 1;
+      const delta = forward(model, [...modelState, ...onehot, ...NO_ANCHOR]);
+      modelState = [modelState[0] + delta[0], modelState[1] + delta[1], modelState[2] + delta[2], modelState[3] + delta[3]];
+      const dx = state[0] - modelState[0], dy = state[1] - modelState[1];
+      const d = Math.sqrt(dx * dx + dy * dy);
+      totalDrift += d; maxDrift = Math.max(maxDrift, d);
+    }
+    console.log(`Sticky-random play, 300 steps, WITH soft blend guidance (browser demo): avg=${(totalDrift / 300).toFixed(4)} max=${maxDrift.toFixed(4)}`);
   }
 
   const out = {

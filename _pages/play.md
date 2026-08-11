@@ -15,9 +15,11 @@ It's a ~1,800-parameter network trained purely on simulated physics — never to
 That drift is mostly the model eating its own predictions — small errors compound. Two things fight it here, both real techniques, not hidden tricks:
 
 - [Self-forcing](https://arxiv.org/abs/2506.08009): alongside correct history, it also trains on states it reached by *its own* mistakes, learning to correct rather than spiral.
-- Periodic grounding: every so often the model is fed the real state as a trusted correction — it was trained to snap toward this when told to. Real long-video models do the same with keyframes. Toggle **"Grounding"** off to see it drift unchecked.
+- Soft guidance: each step, the model's state gets nudged a few percent toward the true trajectory — position *and* velocity, so corrections carry the motion instead of teleporting the ball. Long-horizon video models do the same when they re-condition on real keyframes. Toggle **"Guidance"** off to watch the rollout run unaided.
 
-Even grounded, it still wanders a little between corrections. That's the point — the same failure mode real world model research spends most of its effort on, just visible here in seconds instead of minutes.
+(I first tried making the *network* learn that correction — true state as an extra input, pull toward it in proportion to a confidence signal. At ~1,800 parameters it refuses: it learns an all-or-nothing snap, never a proportional pull. The gate is still in the weights; the training script tells the story.)
+
+Even guided, the pull is weak enough that the model visibly wanders — the same failure mode real world model research spends most of its effort on, just visible here in seconds instead of minutes.
 
 {% include worldmodel.html %}
 
