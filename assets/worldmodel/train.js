@@ -226,22 +226,11 @@ function shuffleInPlace(idx) {
   }
 }
 
-function main() {
-  console.log('Building dataset...');
-  const { X, Y } = buildDataset(400, 150); // 60k transitions
-  console.log(`Dataset: ${X.length} transitions`);
-
-  const model = initModel();
-  const adam = initAdam(model);
-
+function trainEpochs(model, adam, X, Y, epochs, lrStart, lrDecay, stepRef) {
   const BATCH = 64;
-  const EPOCHS = 60;
-  let lr = 0.01;
-  let step = 0;
-
   const idx = Array.from({ length: X.length }, (_, i) => i);
-
-  for (let epoch = 0; epoch < EPOCHS; epoch++) {
+  let lr = lrStart;
+  for (let epoch = 0; epoch < epochs; epoch++) {
     shuffleInPlace(idx);
     let epochLoss = 0, nBatches = 0;
     for (let i = 0; i < idx.length; i += BATCH) {
@@ -249,13 +238,107 @@ function main() {
       const xs = batchIdx.map((j) => X[j]);
       const ys = batchIdx.map((j) => Y[j]);
       const { loss, grads } = trainBatch(model, xs, ys);
-      step++;
-      adamStep(model, grads, adam, step, lr);
+      stepRef.step++;
+      adamStep(model, grads, adam, stepRef.step, lr);
       epochLoss += loss;
       nBatches++;
     }
-    lr *= 0.94; // decay
-    console.log(`epoch ${epoch + 1}/${EPOCHS}  loss=${(epochLoss / nBatches).toExponential(3)}  lr=${lr.toFixed(4)}`);
+    lr *= lrDecay;
+    console.log(`  epoch ${epoch + 1}/${epochs}  loss=${(epochLoss / nBatches).toExponential(3)}  lr=${lr.toFixed(5)}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Self forcing: teacher forcing (train only on ground-truth trajectories)
+// creates exposure bias — the model never sees its own mistakes during
+// training, only during inference, so small errors compound the moment it
+// has to consume its own output as the next input. Here we periodically
+// roll the *current* model out on its own predictions, then label every
+// state it actually visited (drifted or not) with the correct physics
+// delta from that state. Training on that teaches the model to correct
+// itself back toward reality instead of drifting further — DAgger applied
+// to a next-state predictor.
+function selfForcingBatch(model, nEpisodes, stepsPerEpisode) {
+  const X = [], Y = [];
+  for (let e = 0; e < nEpisodes; e++) {
+    let modelState = [
+      (Math.random() * 2 - 1) * 0.8,
+      (Math.random() * 2 - 1) * 0.8,
+      0, 0,
+    ];
+    // Mix episode "styles" so self-forcing directly practices correcting
+    // the two situations this demo actually shows visitors: sitting idle,
+    // and holding one direction into a wall — not just varied sticky play.
+    const style = Math.random();
+    const episodeLen = style < 0.6 ? stepsPerEpisode : stepsPerEpisode * 2;
+    let fixedAction = -1;
+    if (style < 0.6) {
+      // sticky random (realistic mixed play) — handled per-step below
+    } else if (style < 0.8) {
+      fixedAction = 0; // long idle
+    } else {
+      fixedAction = 1 + Math.floor(Math.random() * (N_ACTIONS - 1)); // long single-direction hold
+    }
+
+    let action = 0, holdRemaining = 0;
+    for (let t = 0; t < episodeLen; t++) {
+      if (fixedAction >= 0) {
+        action = fixedAction;
+      } else if (holdRemaining <= 0) {
+        action = Math.floor(Math.random() * N_ACTIONS);
+        holdRemaining = 1 + Math.floor(Math.random() * 12);
+      }
+      holdRemaining--;
+      const onehot = new Array(N_ACTIONS).fill(0);
+      onehot[action] = 1;
+
+      // The "correct" thing to do from wherever the model actually is now.
+      const trueNext = physicsStep(modelState, action);
+      X.push([...modelState, ...onehot]);
+      Y.push([
+        trueNext[0] - modelState[0], trueNext[1] - modelState[1],
+        trueNext[2] - modelState[2], trueNext[3] - modelState[3],
+      ]);
+
+      // Advance using the MODEL's own prediction, not ground truth — this
+      // is what makes it self-forcing rather than teacher-forced.
+      const delta = forward(model, [...modelState, ...onehot]);
+      modelState = [
+        modelState[0] + delta[0], modelState[1] + delta[1],
+        modelState[2] + delta[2], modelState[3] + delta[3],
+      ];
+    }
+  }
+  return { X, Y };
+}
+
+function main() {
+  console.log('Building base (teacher-forced) dataset...');
+  const base = buildDataset(400, 150); // ~136k transitions incl. rest anchoring
+  console.log(`Base dataset: ${base.X.length} transitions`);
+
+  const model = initModel();
+  const adam = initAdam(model);
+  const stepRef = { step: 0 };
+
+  console.log('Phase 1: teacher-forced pretraining');
+  trainEpochs(model, adam, base.X, base.Y, 40, 0.01, 0.93, stepRef);
+
+  console.log('Phase 2: self-forcing rounds (correcting the model\'s own drift)');
+  const SELF_FORCE_ROUNDS = 6;
+  const baseIdxPool = Array.from({ length: base.X.length }, (_, i) => i);
+  for (let round = 1; round <= SELF_FORCE_ROUNDS; round++) {
+    const sf = selfForcingBatch(model, 250, 40); // 10k self-visited states
+    // Mix with a RANDOM sample of the base dataset (not a fixed prefix —
+    // the rest-anchoring examples that keep idle drift low live later in
+    // the array, and a fixed-prefix slice never touched them, so the model
+    // was quietly forgetting them every round).
+    shuffleInPlace(baseIdxPool);
+    const replay = baseIdxPool.slice(0, sf.X.length);
+    const mixX = sf.X.concat(replay.map((j) => base.X[j]));
+    const mixY = sf.Y.concat(replay.map((j) => base.Y[j]));
+    console.log(`round ${round}/${SELF_FORCE_ROUNDS}: ${sf.X.length} self-forced + ${replay.length} replayed base examples`);
+    trainEpochs(model, adam, mixX, mixY, 3, 0.00015, 0.9, stepRef);
   }
 
   // Sanity check 1: idle for 3 seconds (~180 frames @ 60fps) with no action
