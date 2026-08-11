@@ -1,13 +1,20 @@
-// The /colony/ ecosystem. The paragraph is the environment: every letter is
-// a physical object with a home slot in the text. Three castes share ONE
-// tiny steering MLP (assets/worldmodel/critter_train.js) — same brain,
-// different bodies and goals:
-//   workers  — dismantle the text into a pile, then rebuild it
-//   monsters — eat letters; what they swallow is gone until they pop
-//   slingers — fetch letters and throw them at monsters (3 hits = pop)
-// Job choices are a plain state machine; every movement decision (approach,
-// arrival, fleeing) is the net's. The cursor is a predator to the small
-// castes, and clicking a monster bonks it like a thrown letter.
+// The /colony/ ecosystem, now with continual learning. The paragraph is the
+// environment; every letter is a physical object with a home slot.
+//
+// Castes (all movement steered by ONE frozen tiny MLP — see
+// assets/worldmodel/critter_train.js):
+//   workers (4) — dismantle the text into a pile, then rebuild it
+//   slinger (1) — throws letters at the monster during raids
+//   monster (1) — raids every so often and eats letters until driven off
+//   elder   (1) — the critic: watches outcomes and hands out rewards
+//
+// The LEARNING happens in the decision layer, live in your browser:
+//   - the slinger's aim (how far to lead a moving monster) starts naive and
+//     hill-climbs from the elder's hit/miss rewards
+//   - workers pick jobs with a tiny linear value model (distance, risk,
+//     stray-ness) updated online from delivery/theft/drop rewards
+// Learned state persists in localStorage, so the colony gets better across
+// visits. The steering net itself stays frozen.
 const stage = document.getElementById('colony-stage');
 const statusEl = document.getElementById('colony-status');
 
@@ -30,7 +37,6 @@ async function init() {
   }
   const { accCap: ACC_CAP, friction: FRICTION } = policy.meta;
   const net = policy.net;
-  const N_PARAMS = net.W1.length + net.b1.length + net.W2.length + net.b2.length;
 
   function forward(x) {
     const { W1, b1, W2, b2, in: inDim, hidden, out: outDim } = net;
@@ -49,8 +55,6 @@ async function init() {
     return o;
   }
 
-  // One steering step for any body. `threat` may be null (fed as a far-away,
-  // on-manifold pseudo-cursor so the flee channel stays quiet).
   function steer(c, target, threat, accScale) {
     const tx = target.x - c.x, ty = target.y - c.y;
     const dt = Math.hypot(tx, ty);
@@ -67,18 +71,16 @@ async function init() {
     if (a > cap) { ax *= cap / a; ay *= cap / a; }
     c.vx = (c.vx + ax) * FRICTION;
     c.vy = (c.vy + ay) * FRICTION;
-    // keep bodies fully inside the stage — a critter cowering ON the border
-    // gets its body clipped by the frame and looks like a rendering bug
     c.x = Math.max(-0.955, Math.min(0.955, c.x + c.vx));
     c.y = Math.max(-0.955, Math.min(0.955, c.y + c.vy));
     return dt;
   }
 
-  // --- turn the paragraph into a world of letters ---------------------------
+  // --- letters ----------------------------------------------------------------
   const textEl = stage.querySelector('.colony-text');
   const raw = textEl.textContent;
   textEl.textContent = '';
-  const letters = [];  // {ch, span, home{px}, at:'home'|'held'|'ground'|'eaten'|'flying', pos{px}, angle, claimed}
+  const letters = [];
   const words = [];
   let word = null;
   for (const ch of raw) {
@@ -93,7 +95,7 @@ async function init() {
     textEl.appendChild(span);
     if (!word) { word = []; words.push(word); }
     word.push(letters.length);
-    letters.push({ ch, span, home: { x: 0, y: 0 }, at: 'home', pos: { x: 0, y: 0 }, angle: 0, claimed: false });
+    letters.push({ ch, span, home: { x: 0, y: 0 }, at: 'home', pos: { x: 0, y: 0 }, angle: 0, claimed: false, owner: null });
   }
 
   let W = 0, H = 0, font = '16px sans-serif', inkColor = '#333';
@@ -130,7 +132,63 @@ async function init() {
   let pileCount = 0;
   const inPileZone = (p) => p.y > H - 95;
 
-  // --- cursor -----------------------------------------------------------------
+  // --- continual learning state (persists across visits) -----------------------
+  const LEARN_KEY = 'colony-learn-v1';
+  let learn = {
+    aim: { lead: 0, sigma: 5, throws: 0, hits: 0, recent: [] },   // slinger
+    jobW: [0.5, -0.5, -0.5, 0.3],                                  // worker value weights
+    elder: { plus: 0, minus: 0 },
+  };
+  try {
+    const saved = JSON.parse(localStorage.getItem(LEARN_KEY));
+    if (saved && saved.aim && saved.jobW) learn = saved;
+  } catch (e) { /* fresh colony */ }
+  function saveLearn() {
+    try { localStorage.setItem(LEARN_KEY, JSON.stringify(learn)); } catch (e) { /* private mode */ }
+  }
+  setInterval(saveLearn, 10000);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) saveLearn(); });
+
+  const randn = () => {
+    let u = 0, v = 0;
+    while (u === 0) u = Math.random();
+    while (v === 0) v = Math.random();
+    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  };
+
+  // job value model: features -> scalar. Linear on purpose: four weights are
+  // enough to express "prefer close, safe letters", they learn in seconds,
+  // and you can read the learned policy right out of the numbers.
+  function jobFeatures(c, L) {
+    const p = L.at === 'home' ? L.home : L.pos;
+    const n = toNorm(p);
+    const dist = Math.hypot(n.x - c.x, n.y - c.y) / 2.8;            // 0..1
+    let risk = 0;
+    if (monster) risk = Math.max(0, 1 - Math.hypot(n.x - monster.x, n.y - monster.y) / 0.55);
+    const stray = L.at === 'ground' && !inPileZone(L.pos) ? 1 : 0;
+    return [1, dist, risk, stray];
+  }
+  const jobValue = (f) => f.reduce((s, v, i) => s + v * learn.jobW[i], 0);
+  function rewardWorker(c, r) {
+    if (!c.lastJobF) return;
+    const v = jobValue(c.lastJobF);
+    for (let i = 0; i < learn.jobW.length; i++) {
+      learn.jobW[i] = Math.max(-3, Math.min(3, learn.jobW[i] + 0.08 * (r - v) * c.lastJobF[i]));
+    }
+    emitReward(c, r);
+  }
+
+  // the elder's visible verdicts
+  const sparks = [];   // {x, y, txt, good, t}
+  function emitReward(c, r) {
+    const p = toPx(c);
+    if (sparks.length > 5) sparks.shift();
+    sparks.push({ x: p.x, y: p.y - 16, txt: (r > 0 ? '+' : '−') + Math.abs(r).toFixed(1).replace(/\.0$/, ''), good: r > 0, t: 45 });
+    if (r > 0) learn.elder.plus++; else learn.elder.minus++;
+    elder.interest = { x: c.x, y: c.y };
+  }
+
+  // --- cursor ------------------------------------------------------------------
   const cursor = { x: 2.2, y: 2.2, vx: 0, vy: 0, px: 2.2, py: 2.2, active: false };
   stage.addEventListener('pointermove', (e) => {
     const rect = stage.getBoundingClientRect();
@@ -138,145 +196,149 @@ async function init() {
     cursor.x = n.x; cursor.y = n.y; cursor.active = true;
   });
   stage.addEventListener('pointerleave', () => { cursor.active = false; });
-
   stage.addEventListener('pointerdown', (e) => {
     const rect = stage.getBoundingClientRect();
     const n = toNorm({ x: e.clientX - rect.left, y: e.clientY - rect.top });
-    // bonk a monster?
-    for (const m of monsters) {
-      if (Math.hypot(m.x - n.x, m.y - n.y) < 0.14) {
-        hitMonster(m);
-        return;
-      }
+    if (monster && Math.hypot(monster.x - n.x, monster.y - n.y) < 0.14) {
+      hitMonster();
+      return;
     }
-    // otherwise scare the small folk
     for (const c of critters) {
       const dx = c.x - n.x, dy = c.y - n.y;
       const d = Math.hypot(dx, dy);
-      if (d < 0.5 && d > 1e-6) {
-        const kick = 0.09 * (1 - d / 0.5);
+      if (d < 0.45 && d > 1e-6) {
+        const kick = 0.08 * (1 - d / 0.45);
         c.vx += (dx / d) * kick;
         c.vy += (dy / d) * kick;
-        if (c.carrying >= 0) dropCarried(c);
+        if (c.carrying >= 0) {
+          const L = letters[c.carrying];
+          L.at = 'ground';
+          L.pos = toPx({ x: c.x, y: c.y });
+          L.angle = (Math.random() - 0.5) * 0.9;
+          L.claimed = false;
+          if (c.role === 'worker') rewardWorker(c, -0.5);
+          L.owner = null;
+          c.carrying = -1;
+          c.job = null;
+        }
       }
     }
   });
 
-  function dropCarried(c) {
-    const L = letters[c.carrying];
-    L.at = 'ground';
-    L.pos = toPx({ x: c.x, y: c.y });
-    L.angle = (Math.random() - 0.5) * 0.9;
-    L.claimed = false;
-    c.carrying = -1;
-    c.job = null;
-  }
-
   // --- castes -------------------------------------------------------------------
-  const WORKER_COLORS = ['#818cf8', '#a78bfa', '#6ee7b7', '#f9a8d4', '#7dd3fc'];
-  const SLINGER_COLORS = ['#fb923c', '#fbbf24'];
+  const WORKER_COLORS = ['#818cf8', '#a78bfa', '#6ee7b7', '#7dd3fc'];
   const critters = [
     ...WORKER_COLORS.map((color, i) => makeSmall('worker', color, i)),
-    ...SLINGER_COLORS.map((color, i) => makeSmall('slinger', color, i + 5)),
+    makeSmall('slinger', '#fb923c', 5),
   ];
+  const elder = { role: 'elder', x: 0.6, y: 0.6, vx: 0, vy: 0, interest: null, wanderT: 0, wander: { x: 0.5, y: 0.5 }, blinkT: 200, blink: 0, seed: 4242 };
   function makeSmall(role, color, i) {
     return {
       role, color,
       x: (Math.random() * 2 - 1) * 0.8, y: (Math.random() * 2 - 1) * 0.8,
       vx: 0, vy: 0,
-      carrying: -1, job: null,
+      carrying: -1, job: null, lastJobF: null,
       wanderT: 0, wander: { x: 0, y: 0 },
       blinkT: 60 + Math.random() * 120, blink: 0,
-      throwCooldown: 0,
+      throwCooldown: 0, thrownLead: 0,
       seed: i * 977,
     };
   }
-  const monsters = [makeMonster(0), makeMonster(1)];
-  function makeMonster(i) {
+
+  // one monster, arriving in RAIDS with calm in between
+  let monster = null;
+  let raidTimer = 500 + Math.random() * 400;   // first raid ~20-30s in
+  function spawnMonster() {
     const edge = Math.random() < 0.5 ? -1 : 1;
-    return {
-      x: edge * 0.95, y: (Math.random() * 2 - 1) * 0.8,
+    monster = {
+      x: edge * 0.95, y: (Math.random() * 2 - 1) * 0.7,
       vx: 0, vy: 0,
-      belly: [],            // letter indices it has eaten
-      hits: 0,
-      target: -1,           // letter index being hunted
-      cooldown: 60 + Math.random() * 60,
+      belly: [], hits: 0, target: -1,
+      cooldown: 40,
       flash: 0, mouth: 0,
       wanderT: 0, wander: null,
-      seed: 313 + i * 733,
+      seed: 313,
     };
   }
-  const projectiles = [];   // {letter, x, y, vx, vy, spin}
-  const bursts = [];        // {x, y, t} pop effects
-  const stats = { eaten: 0, thrown: 0, hits: 0, pops: 0 };
-  window.__colony = stats;  // for tests
-  window.__colonyDebug = { critters: () => critters.map((c) => ({ role: c.role, x: +c.x.toFixed(2), y: +c.y.toFixed(2), carrying: c.carrying, cooldown: c.throwCooldown, job: c.job ? { phase: c.job.phase, at: c.job.letter.at } : null })), monsters: () => monsters.map((m) => ({ x: +m.x.toFixed(2), y: +m.y.toFixed(2), belly: m.belly.length, hits: m.hits, cooldown: m.cooldown })) };
+  const projectiles = [];
+  const bursts = [];
+  const stats = { eaten: 0, thrown: 0, hits: 0, pops: 0, delivered: 0 };
+  window.__colony = stats;
+  window.__colonyLearn = learn;
 
-  function hitMonster(m) {
-    m.hits++;
-    m.flash = 8;
+  function hitMonster() {
+    if (!monster) return;
+    monster.hits++;
+    monster.flash = 8;
     stats.hits++;
-    if (m.hits >= 4) {
-      // pop: release everything it swallowed, respawn at an edge
-      const p = toPx(m);
-      bursts.push({ x: p.x, y: p.y, t: 14 });
-      for (const li of m.belly) {
+    if (monster.hits >= 3) {
+      const p = toPx(monster);
+      bursts.push({ x: p.x, y: p.y, t: 16 });
+      for (const li of monster.belly) {
         const L = letters[li];
         L.at = 'ground';
         L.pos = { x: p.x + (Math.random() - 0.5) * 70, y: p.y + (Math.random() - 0.5) * 50 };
         L.angle = (Math.random() - 0.5) * 1.2;
         L.claimed = false;
       }
-      m.belly = [];
-      m.hits = 0;
-      m.target = -1;
-      const edge = Math.random() < 0.5 ? -1 : 1;
-      m.x = edge * 0.98; m.y = (Math.random() * 2 - 1) * 0.8;
-      m.vx = 0; m.vy = 0;
-      m.cooldown = 150 + Math.random() * 120;
+      monster = null;
+      raidTimer = 1200 + Math.random() * 900;   // 40-70s of calm
       stats.pops++;
     }
   }
 
-  // --- jobs for the small castes ---------------------------------------------
+  // --- jobs ---------------------------------------------------------------------
   let mode = 'dismantle';
   let restT = 0;
 
-  function claimWorkerJob() {
+  // workers CHOOSE among candidate jobs with the learned value model
+  function claimWorkerJob(c) {
     if (mode === 'rest') return null;
+    const cands = [];
     const ground = letters.filter((L) => L.at === 'ground' && !L.claimed);
+    const strays = ground.filter((L) => !inPileZone(L.pos));
     if (mode === 'dismantle') {
-      const stray = ground.find((L) => !inPileZone(L.pos));
-      if (stray) {
-        stray.claimed = true;
-        return { letter: stray, phase: 'fetch', dest: pileSlot(pileCount++) };
-      }
+      for (const s of strays.slice(0, 2)) cands.push({ letter: s, dest: () => pileSlot(pileCount++) });
       const live = words.filter((w) => w.some((i) => letters[i].at === 'home' && !letters[i].claimed));
-      if (!live.length) return null;
-      const w = live[Math.floor(Math.random() * live.length)];
-      for (let k = w.length - 1; k >= 0; k--) {
-        const L = letters[w[k]];
-        if (L.at === 'home' && !L.claimed) {
-          L.claimed = true;
-          return { letter: L, phase: 'fetch', dest: pileSlot(pileCount++) };
+      for (let k = 0; k < 3 && live.length; k++) {
+        const w = live[Math.floor(Math.random() * live.length)];
+        for (let j = w.length - 1; j >= 0; j--) {
+          const L = letters[w[j]];
+          if (L.at === 'home' && !L.claimed && !cands.some((cd) => cd.letter === L)) {
+            cands.push({ letter: L, dest: () => pileSlot(pileCount++) });
+            break;
+          }
         }
       }
-      return null;
+    } else {
+      for (let k = 0; k < 4 && ground.length; k++) {
+        const L = ground[Math.floor(Math.random() * ground.length)];
+        if (!cands.some((cd) => cd.letter === L)) cands.push({ letter: L, dest: () => ({ x: L.home.x, y: L.home.y }) });
+      }
     }
-    if (!ground.length) return null;
-    const L = ground[Math.floor(Math.random() * ground.length)];
-    L.claimed = true;
-    return { letter: L, phase: 'fetch', dest: { x: L.home.x, y: L.home.y } };
+    if (!cands.length) return null;
+    // softmax over learned values
+    const feats = cands.map((cd) => jobFeatures(c, cd.letter));
+    const vals = feats.map(jobValue);
+    const mx = Math.max(...vals);
+    const exps = vals.map((v) => Math.exp((v - mx) / 0.25));
+    const Z = exps.reduce((a, b) => a + b, 0);
+    let pick = Math.random() * Z, idx = 0;
+    for (; idx < exps.length - 1; idx++) { pick -= exps[idx]; if (pick <= 0) break; }
+    const chosen = cands[idx];
+    chosen.letter.claimed = true;
+    chosen.letter.owner = c;
+    c.lastJobF = feats[idx];
+    return { letter: chosen.letter, phase: 'fetch', dest: chosen.dest() };
   }
 
-  function claimAmmo() {
-    // slingers prefer loose letters, then the pile, then the text itself —
-    // sacrificing words for defense
+  function claimAmmo(c) {
     const ground = letters.filter((L) => L.at === 'ground' && !L.claimed);
     let L = ground.find((G) => !inPileZone(G.pos)) || ground[0];
     if (!L) L = letters.find((G) => G.at === 'home' && !G.claimed);
     if (!L) return null;
     L.claimed = true;
+    L.owner = c;
     return { letter: L, phase: 'fetch' };
   }
 
@@ -290,12 +352,8 @@ async function init() {
     cursor.vx = cursor.x - cursor.px; cursor.vy = cursor.y - cursor.py;
     cursor.px = cursor.x; cursor.py = cursor.y;
 
-    // colony mode
     const homeCount = letters.filter((L) => L.at === 'home').length;
     const groundCount = letters.filter((L) => L.at === 'ground').length;
-    // dismantle ends when the text is gone; rebuild ends when there is
-    // nothing left to pick up (whatever's missing is in monster bellies or
-    // someone's hands — the colony can't finish repairs until monsters pop)
     if (mode === 'dismantle' && homeCount === 0) {
       mode = 'rest'; restT = 75;
     } else if (mode === 'rebuild' && groundCount === 0) {
@@ -305,56 +363,64 @@ async function init() {
       mode = homeCount > letters.length * 0.6 ? 'dismantle' : 'rebuild';
     }
 
-    // nearest threat to a small critter: the cursor or any monster
+    // raid pacing
+    if (!monster && --raidTimer <= 0) spawnMonster();
+
     function threatFor(c) {
       let best = cursor.active ? cursor : null;
       let bd = best ? Math.hypot(cursor.x - c.x, cursor.y - c.y) : Infinity;
-      for (const m of monsters) {
-        const d = Math.hypot(m.x - c.x, m.y - c.y);
-        if (d < bd) { bd = d; best = m; }
+      if (monster) {
+        const d = Math.hypot(monster.x - c.x, monster.y - c.y);
+        if (d < bd) { bd = d; best = monster; }
       }
       return best;
     }
 
-    // --- small castes ---------------------------------------------------------
+    // --- small castes ----------------------------------------------------------
     for (const c of critters) {
       if (c.job && !jobValid(c.job)) { c.job.letter.claimed = false; c.job = null; }
       if (c.throwCooldown > 0) c.throwCooldown--;
 
       let target = null;
       if (c.role === 'worker') {
-        if (!c.job) c.job = claimWorkerJob();
+        if (!c.job) c.job = claimWorkerJob(c);
         if (c.job) target = toNorm(c.job.phase === 'fetch' ? (c.job.letter.at === 'home' ? c.job.letter.home : c.job.letter.pos) : c.job.dest);
       } else { // slinger
-        if (c.carrying < 0 && !c.job && c.throwCooldown <= 0) c.job = claimAmmo();
+        if (c.carrying < 0 && !c.job && c.throwCooldown <= 0) c.job = claimAmmo(c);
         if (c.job && c.carrying < 0) {
           target = toNorm(c.job.letter.at === 'home' ? c.job.letter.home : c.job.letter.pos);
-        } else if (c.carrying >= 0) {
-          // armed: take a standoff position near the hungriest monster
-          let m = monsters[0], bd = Infinity;
-          for (const mm of monsters) {
-            const d = Math.hypot(mm.x - c.x, mm.y - c.y);
-            if (d < bd) { bd = d; m = mm; }
-          }
-          const away = Math.hypot(c.x - m.x, c.y - m.y) || 1;
+        } else if (c.carrying >= 0 && monster) {
+          const away = Math.hypot(c.x - monster.x, c.y - monster.y) || 1;
           target = {
-            x: m.x + ((c.x - m.x) / away) * 0.4,
-            y: m.y + ((c.y - m.y) / away) * 0.4,
+            x: monster.x + ((c.x - monster.x) / away) * 0.4,
+            y: monster.y + ((c.y - monster.y) / away) * 0.4,
           };
-          // in range and lined up? throw!
-          if (bd < 0.55 && c.throwCooldown <= 0) {
+          if (away < 0.55 && c.throwCooldown <= 0) {
+            // LEARNED aim: lead the target by a learned number of steps,
+            // plus exploration noise the elder's rewards will shrink
             const L = letters[c.carrying];
-            const aim = { x: m.x + m.vx * 8, y: m.y + m.vy * 8 };
+            const lead = learn.aim.lead + randn() * learn.aim.sigma;
+            c.thrownLead = lead;
+            const aim = { x: monster.x + monster.vx * lead, y: monster.y + monster.vy * lead };
             const dx = aim.x - c.x, dy = aim.y - c.y;
             const dl = Math.hypot(dx, dy) || 1;
-            projectiles.push({ letter: c.carrying, x: c.x, y: c.y, vx: (dx / dl) * 0.055, vy: (dy / dl) * 0.055, spin: 0 });
+            projectiles.push({ letter: c.carrying, x: c.x, y: c.y, vx: (dx / dl) * 0.05, vy: (dy / dl) * 0.05, spin: 0, lead, thrower: c });
             L.at = 'flying';
             L.claimed = false;
+            L.owner = null;
             c.carrying = -1;
             c.job = null;
-            c.throwCooldown = 100 + Math.random() * 50;
+            c.throwCooldown = 70 + Math.random() * 40;
             stats.thrown++;
+            learn.aim.throws++;
           }
+        } else if (c.carrying >= 0) {
+          // calm: stand guard near the middle with the ammo ready
+          if (--c.wanderT <= 0) {
+            c.wanderT = 120 + Math.random() * 120;
+            c.wander = { x: (Math.random() * 2 - 1) * 0.4, y: (Math.random() * 2 - 1) * 0.4 };
+          }
+          target = c.wander;
         }
       }
       if (!target) {
@@ -365,12 +431,10 @@ async function init() {
         target = c.wander;
       }
 
-      // slingers hold their ground near monsters; workers fear everything
       const threat = c.role === 'worker' ? threatFor(c) : (cursor.active ? cursor : null);
       steer(c, target, threat, 1);
       const dtNow = Math.hypot(target.x - c.x, target.y - c.y);
 
-      // arrivals
       if (c.job && dtNow < 0.085) {
         const L = c.job.letter;
         if (c.job.phase === 'fetch') {
@@ -378,7 +442,7 @@ async function init() {
           L.at = 'held';
           c.carrying = letters.indexOf(L);
           c.job.phase = 'deliver';
-          if (c.role === 'slinger') c.job = null; // armed — standoff logic takes over
+          if (c.role === 'slinger') c.job = null;
         } else if (c.role === 'worker') {
           const goingHome = Math.hypot(c.job.dest.x - L.home.x, c.job.dest.y - L.home.y) < 2;
           if (goingHome) {
@@ -390,6 +454,9 @@ async function init() {
             L.angle = (Math.random() - 0.5) * 0.5;
           }
           L.claimed = false;
+          L.owner = null;
+          stats.delivered++;
+          rewardWorker(c, 1);
           c.carrying = -1;
           c.job = null;
         }
@@ -399,8 +466,9 @@ async function init() {
       if (c.blink > 0) c.blink--;
     }
 
-    // --- monsters ---------------------------------------------------------------
-    for (const m of monsters) {
+    // --- monster -----------------------------------------------------------------
+    if (monster) {
+      const m = monster;
       if (m.flash > 0) m.flash--;
       let target;
       if (m.cooldown > 0) {
@@ -412,7 +480,6 @@ async function init() {
         }
         target = m.wander;
       } else {
-        // hunt the nearest edible letter (home or ground; held ones are safe)
         if (m.target < 0 || !(letters[m.target].at === 'home' || letters[m.target].at === 'ground')) {
           let bd = Infinity;
           m.target = -1;
@@ -425,68 +492,120 @@ async function init() {
             if (d < bd) { bd = d; m.target = i; }
           }
         }
-        if (m.target >= 0) {
-          const L = letters[m.target];
-          target = toNorm(L.at === 'home' ? L.home : L.pos);
-        } else {
-          target = { x: 0, y: 0 };
-        }
+        target = m.target >= 0 ? toNorm(letters[m.target].at === 'home' ? letters[m.target].home : letters[m.target].pos) : { x: 0, y: 0 };
       }
-      const dt = steer(m, target, null, 0.62); // heavier, slower body
+      const dt = steer(m, target, null, 0.62);
       m.mouth = Math.max(0, Math.min(1, (0.35 - dt) / 0.3));
 
       if (m.cooldown <= 0 && m.target >= 0 && dt < 0.1) {
         const L = letters[m.target];
+        if (L.owner && L.owner.role === 'worker') rewardWorker(L.owner, -1.5);
         if (L.at === 'home') L.span.style.visibility = 'hidden';
         L.at = 'eaten';
         L.claimed = false;
+        L.owner = null;
         m.belly.push(m.target);
         m.target = -1;
-        m.cooldown = 90 + Math.random() * 90;
+        m.cooldown = 100 + Math.random() * 80;
         stats.eaten++;
       }
     }
 
-    // --- projectiles --------------------------------------------------------------
+    // --- projectiles: outcomes feed the aim learner --------------------------------
     for (let i = projectiles.length - 1; i >= 0; i--) {
       const p = projectiles[i];
       p.x += p.vx; p.y += p.vy;
-      p.spin += 0.35;
-      let done = false;
-      for (const m of monsters) {
-        if (Math.hypot(m.x - p.x, m.y - p.y) < 0.11) {
-          hitMonster(m);
-          done = true;
-          break;
-        }
-      }
-      if (done || Math.abs(p.x) > 1.02 || Math.abs(p.y) > 1.02) {
+      p.spin += 0.3;
+      let outcome = null;
+      if (monster && Math.hypot(monster.x - p.x, monster.y - p.y) < 0.09) outcome = 'hit';
+      else if (Math.abs(p.x) > 1.02 || Math.abs(p.y) > 1.02) outcome = 'miss';
+      if (outcome) {
         const L = letters[p.letter];
         L.at = 'ground';
         const lp = toPx({ x: Math.max(-0.97, Math.min(0.97, p.x)), y: Math.max(-0.97, Math.min(0.97, p.y)) });
         L.pos = { x: lp.x, y: lp.y };
         L.angle = (Math.random() - 0.5) * 1.2;
+        if (outcome === 'hit') {
+          hitMonster();
+          learn.aim.hits++;
+          // pull the lead toward what just worked, calm the exploration
+          learn.aim.lead += 0.35 * (p.lead - learn.aim.lead);
+          learn.aim.sigma = Math.max(1, learn.aim.sigma * 0.9);
+          emitReward(p.thrower, 1);
+        } else {
+          learn.aim.sigma = Math.min(8, learn.aim.sigma * 1.05);
+          emitReward(p.thrower, -1);
+        }
+        learn.aim.recent.push(outcome === 'hit' ? 1 : 0);
+        if (learn.aim.recent.length > 20) learn.aim.recent.shift();
         projectiles.splice(i, 1);
       }
     }
 
+    // --- elder: drift toward whatever just happened --------------------------------
+    {
+      let target;
+      if (elder.interest) {
+        target = elder.interest;
+        if (Math.hypot(target.x - elder.x, target.y - elder.y) < 0.2) elder.interest = null;
+      } else {
+        if (--elder.wanderT <= 0) {
+          elder.wanderT = 150 + Math.random() * 150;
+          elder.wander = { x: (Math.random() * 2 - 1) * 0.5, y: (Math.random() * 2 - 1) * 0.5 };
+        }
+        target = elder.wander;
+      }
+      steer(elder, target, null, 0.45);
+      if (--elder.blinkT <= 0) { elder.blink = 6; elder.blinkT = 150 + Math.random() * 200; }
+      if (elder.blink > 0) elder.blink--;
+    }
+
     if (statusEl) {
-      const eaten = monsters.reduce((s, m) => s + m.belly.length, 0);
-      const verb = mode === 'dismantle' ? 'dismantling' : mode === 'rebuild' ? 'repairing' : 'plotting';
+      const recent = learn.aim.recent;
+      const rate = recent.length ? Math.round((recent.reduce((a, b) => a + b, 0) / recent.length) * 100) : null;
+      const aimTxt = learn.aim.throws
+        ? `slinger aim: lead ${learn.aim.lead.toFixed(1)} (${rate === null ? '—' : rate + '% of last ' + recent.length} · lifetime ${learn.aim.hits}/${learn.aim.throws})`
+        : 'slinger aim: untrained';
+      const raidTxt = monster ? 'RAID' : `next raid ~${Math.ceil(raidTimer / 30)}s`;
       statusEl.textContent =
-        `5 workers + 2 slingers + 2 monsters, one shared ${N_PARAMS}-param steering net · ${verb} · ` +
-        `${eaten} letters in monster bellies · ${stats.pops} monsters popped`;
+        `${mode === 'dismantle' ? 'dismantling' : mode === 'rebuild' ? 'repairing' : 'resting'} · ${raidTxt} · ` +
+        `${aimTxt} · elder verdicts +${learn.elder.plus}/−${learn.elder.minus} · learning saved locally`;
     }
   }
 
-  // --- drawing --------------------------------------------------------------------
+  // --- drawing ---------------------------------------------------------------------
+  // rendered positions are smoothed so 30Hz steering reads as glide, not jitter
+  function smooth(e) {
+    const p = toPx(e);
+    e.sx = e.sx === undefined ? p.x : e.sx + (p.x - e.sx) * 0.35;
+    e.sy = e.sy === undefined ? p.y : e.sy + (p.y - e.sy) * 0.35;
+    return { x: e.sx, y: e.sy };
+  }
+
+  function drawEyes(p, look, blink, dark) {
+    for (const side of [-1, 1]) {
+      const ex = p.x + side * 3.4, ey = p.y - 2.5;
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      if (blink > 0) {
+        ctx.fillRect(ex - 2, ey - 0.6, 4, 1.2);
+      } else {
+        ctx.arc(ex, ey, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = dark;
+        ctx.beginPath();
+        ctx.arc(ex + look.x * 1.1, ey + look.y * 1.1, 1.25, 0, Math.PI * 2);
+      }
+      ctx.fill();
+    }
+  }
+
   function draw(now) {
     ctx.clearRect(0, 0, W, H);
     ctx.font = font;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
 
-    // grounded letters
     for (const L of letters) {
       if (L.at !== 'ground') continue;
       ctx.save();
@@ -498,7 +617,6 @@ async function init() {
       ctx.restore();
     }
 
-    // flying letters
     for (const p of projectiles) {
       const pp = toPx(p);
       ctx.save();
@@ -509,40 +627,47 @@ async function init() {
       ctx.restore();
     }
 
-    // pop bursts
     for (let i = bursts.length - 1; i >= 0; i--) {
       const b = bursts[i];
-      const k = 1 - b.t / 14;
-      ctx.strokeStyle = `rgba(167,139,250,${1 - k})`;
-      ctx.lineWidth = 2.5;
+      const k = 1 - b.t / 16;
+      ctx.strokeStyle = `rgba(167,139,250,${0.7 * (1 - k)})`;
+      ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(b.x, b.y, 10 + k * 34, 0, Math.PI * 2);
+      ctx.arc(b.x, b.y, 10 + k * 30, 0, Math.PI * 2);
       ctx.stroke();
       if (--b.t <= 0) bursts.splice(i, 1);
     }
 
-    // monsters
-    for (const m of monsters) {
-      const p = toPx(m);
+    // reward sparks
+    for (let i = sparks.length - 1; i >= 0; i--) {
+      const s = sparks[i];
+      s.y -= 0.5;
+      const a = Math.min(1, s.t / 20);
+      ctx.fillStyle = s.good ? `rgba(52,211,153,${a})` : `rgba(251,113,133,${a})`;
+      ctx.font = 'bold 12px sans-serif';
+      ctx.fillText(s.txt, s.x, s.y);
+      ctx.font = font;
+      if (--s.t <= 0) sparks.splice(i, 1);
+    }
+
+    if (monster) {
+      const m = monster;
+      const p = smooth(m);
       const speed = Math.hypot(m.vx, m.vy);
       const ang = Math.atan2(m.vy, m.vx);
       const r = 13 + Math.min(5, m.belly.length * 0.5);
-      const wob = Math.sin(now / 160 + m.seed) * 1.6;
 
-      ctx.fillStyle = 'rgba(0,0,0,0.22)';
+      ctx.fillStyle = 'rgba(0,0,0,0.2)';
       ctx.beginPath();
       ctx.ellipse(p.x, p.y + r * 0.72, r * 0.85, 3.2, 0, 0, Math.PI * 2);
       ctx.fill();
 
-      // body
       ctx.save();
-      ctx.translate(p.x, p.y + wob * 0.4);
-      ctx.rotate(ang * 0.15);
+      ctx.translate(p.x, p.y);
       ctx.fillStyle = m.flash > 0 ? '#ede9fe' : '#7c3aed';
       ctx.beginPath();
-      ctx.ellipse(0, 0, r * (1 + Math.min(0.25, speed * 6)), r * 0.92, 0, 0, Math.PI * 2);
+      ctx.ellipse(0, 0, r * (1 + Math.min(0.18, speed * 5)), r * 0.92, 0, 0, Math.PI * 2);
       ctx.fill();
-      // horns
       ctx.fillStyle = m.flash > 0 ? '#c4b5fd' : '#4c1d95';
       for (const s of [-1, 1]) {
         ctx.beginPath();
@@ -552,7 +677,6 @@ async function init() {
         ctx.closePath();
         ctx.fill();
       }
-      // angry eyes
       for (const s of [-1, 1]) {
         ctx.fillStyle = '#fff';
         ctx.beginPath();
@@ -569,83 +693,99 @@ async function init() {
         ctx.lineTo(s * r * 0.6, -r * 0.28);
         ctx.stroke();
       }
-      // mouth opens as it closes on a snack
       ctx.fillStyle = '#2e1065';
       ctx.beginPath();
       ctx.ellipse(0, r * 0.35, r * 0.32, r * 0.08 + m.mouth * r * 0.3, 0, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
 
-      // hit pips
       for (let i = 0; i < m.hits; i++) {
         ctx.fillStyle = '#fbbf24';
         ctx.beginPath();
-        ctx.arc(p.x - 12 + i * 8, p.y - r - 8, 2.6, 0, Math.PI * 2);
+        ctx.arc(p.x - 8 + i * 8, p.y - r - 8, 2.6, 0, Math.PI * 2);
         ctx.fill();
       }
     }
 
-    // small castes
     for (const c of critters) {
-      const p = toPx(c);
+      const p = smooth(c);
       const speed = Math.hypot(c.vx, c.vy);
       const ang = Math.atan2(c.vy, c.vx);
-      const squash = Math.min(0.35, speed * 9);
-      const bob = Math.sin(now / 130 + c.seed) * 1.3;
+      const squash = Math.min(0.2, speed * 6);
+      // bob only while idling — moving critters glide
+      const idle = Math.max(0, 1 - speed * 30);
+      const bob = Math.sin(now / 260 + c.seed) * 0.8 * idle;
 
-      ctx.fillStyle = 'rgba(0,0,0,0.18)';
+      ctx.fillStyle = 'rgba(0,0,0,0.16)';
       ctx.beginPath();
       ctx.ellipse(p.x, p.y + 8, 7.5, 2.6, 0, 0, Math.PI * 2);
       ctx.fill();
 
       ctx.save();
-      ctx.translate(p.x, p.y + bob * 0.4);
-      ctx.rotate(ang);
+      ctx.translate(p.x, p.y + bob);
+      ctx.rotate(ang * Math.min(1, speed * 40));
       ctx.fillStyle = c.color;
       ctx.beginPath();
       ctx.ellipse(0, 0, 8 * (1 + squash), 8 * (1 - squash * 0.6), 0, 0, Math.PI * 2);
       ctx.fill();
-      if (c.role === 'slinger') {           // headband
+      if (c.role === 'slinger') {
         ctx.strokeStyle = 'rgba(120,53,15,0.85)';
         ctx.lineWidth = 2.2;
         ctx.beginPath();
-        ctx.arc(0, 0, 8 * (1 + squash) * 0.92, -2.6, -0.5);
+        ctx.arc(0, 0, 7.4, -2.6, -0.5);
         ctx.stroke();
       }
       ctx.restore();
 
-      const look = speed > 0.002 ? { x: Math.cos(ang), y: Math.sin(ang) } : { x: 0, y: 0.3 };
-      for (const side of [-1, 1]) {
-        const ex = p.x + side * 3.4, ey = p.y - 2.5 + bob * 0.4;
-        ctx.fillStyle = '#fff';
-        ctx.beginPath();
-        if (c.blink > 0) {
-          ctx.fillRect(ex - 2, ey - 0.6, 4, 1.2);
-        } else {
-          ctx.arc(ex, ey, 2.5, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.fillStyle = '#1e1b4b';
-          ctx.beginPath();
-          ctx.arc(ex + look.x * 1.1, ey + look.y * 1.1, 1.25, 0, Math.PI * 2);
-        }
-        ctx.fill();
-      }
+      const look = speed > 0.004 ? { x: Math.cos(ang), y: Math.sin(ang) } : { x: 0, y: 0.3 };
+      drawEyes({ x: p.x, y: p.y + bob }, look, c.blink, '#1e1b4b');
 
       if (c.carrying >= 0) {
         const L = letters[c.carrying];
         ctx.save();
         ctx.translate(p.x, p.y - 15 + bob);
-        // slingers wind up: their letter spins faster the closer a monster is
-        const spin = c.role === 'slinger' ? now / 90 : Math.sin(now / 210 + c.seed) * 0.16;
-        ctx.rotate(c.role === 'slinger' ? spin % (Math.PI * 2) : spin);
+        ctx.rotate(Math.sin(now / 300 + c.seed) * 0.12);
         ctx.fillStyle = inkColor;
         ctx.fillText(L.ch, 0, 0);
         ctx.restore();
       }
     }
+
+    // the elder: bigger, ivory, crowned
+    {
+      const p = smooth(elder);
+      const speed = Math.hypot(elder.vx, elder.vy);
+      const ang = Math.atan2(elder.vy, elder.vx);
+      const bob = Math.sin(now / 320) * 0.7;
+      ctx.fillStyle = 'rgba(0,0,0,0.16)';
+      ctx.beginPath();
+      ctx.ellipse(p.x, p.y + 10, 9.5, 3, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.save();
+      ctx.translate(p.x, p.y + bob);
+      ctx.fillStyle = '#e7e5e4';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 10.5, 9.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // crown
+      ctx.fillStyle = '#fbbf24';
+      ctx.beginPath();
+      ctx.moveTo(-6, -8);
+      ctx.lineTo(-6, -13);
+      ctx.lineTo(-3, -10);
+      ctx.lineTo(0, -14);
+      ctx.lineTo(3, -10);
+      ctx.lineTo(6, -13);
+      ctx.lineTo(6, -8);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+      const look = speed > 0.003 ? { x: Math.cos(ang), y: Math.sin(ang) } : { x: 0, y: 0.2 };
+      drawEyes({ x: p.x, y: p.y + bob + 1 }, look, elder.blink, '#44403c');
+    }
   }
 
-  // --- loop --------------------------------------------------------------------------
+  // --- loop ------------------------------------------------------------------------
   const STEP_MS = 33;
   let last = 0, running = true;
   document.addEventListener('visibilitychange', () => { running = !document.hidden; });
