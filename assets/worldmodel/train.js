@@ -106,15 +106,15 @@ function buildDataset(nEpisodes, stepsPerEpisode) {
 
 // ---------------------------------------------------------------------------
 // Tiny 2-layer MLP, trained with hand-rolled backprop + Adam. Input layout:
-//   [state(4), action onehot(N_ACTIONS), anchor state(4), anchor confidence(1)]
-// The anchor is normally all zeros with confidence=0, meaning "no outside
-// correction, behave normally." When confidence=1 and anchor holds a real
-// state, the network is trained to snap its prediction toward that anchor
-// regardless of how far its own state has drifted — see buildGroundingDataset.
+//   [state(4), action onehot(N_ACTIONS), GT token state(4), token flag(1)]
+// The token is normally all zeros with flag=0, meaning "no reference,
+// behave normally." When flag=1 and the token holds the true state, the
+// network is trained to steer its prediction gently toward that token —
+// see buildGuidanceDataset.
 // ---------------------------------------------------------------------------
 const ANCHOR_DIM = 4;
 const CONF_DIM = 1;
-const NO_ANCHOR = [0, 0, 0, 0, 0]; // anchor(4) + confidence(1), all zero
+const NO_ANCHOR = [0, 0, 0, 0, 0]; // token(4) + flag(1), all zero
 const IN = 4 + N_ACTIONS + ANCHOR_DIM + CONF_DIM; // 14
 const HIDDEN = 96;
 const OUT = 4;
@@ -320,39 +320,40 @@ function selfForcingBatch(model, nEpisodes, stepsPerEpisode) {
 }
 
 // ---------------------------------------------------------------------------
-// Periodic grounding: self-forcing reduces how fast error compounds per
-// step, but a network this small will still drift, unboundedly, given long
-// enough. Real long-horizon video world models fight this by periodically
-// re-conditioning on a real reference (a keyframe, a sparse ground-truth
-// pose) instead of purely on their own rollout. We teach the same trick:
-// an extra "anchor" state + confidence input the network can optionally be
-// told to trust. Training data:
-//   - confidence 0, anchor zeroed: same as ordinary dynamics (already
-//     covered by buildDataset/selfForcingBatch — nothing new needed here).
-//   - confidence in (0,1], anchor = the TRUE current state, but the state
-//     the network is asked to act from is deliberately displaced (as if it
-//     had drifted there on its own). The target blends between "keep
-//     drifting from where I am" and "snap toward what the anchor says
-//     reality actually is," weighted by confidence.
-// Honest outcome: this mechanism trains, but not the way it was designed
-// to. At ~1,800 parameters the network never learns a PROPORTIONAL pull —
-// across two attempts (uniform confidence sampling, then sampling heavily
-// biased toward low confidence) it collapses to an all-or-nothing gate:
-// conf >= ~0.5 snaps hard toward the anchor, conf <= ~0.3 does nothing.
-// The snap works (verified by probes and the sanity checks below), but a
-// snap looks like teleporting, and applying it in small frequent doses
-// suppressed the drift so completely the demo lost its point. So the
-// browser demo leaves the anchor input zeroed and applies soft guidance
-// as a plain state blend outside the network instead (GUIDE_RATE in
-// assets/js/worldmodel.js) — which carries velocity exactly and moves the
-// ball no faster than its natural motion. The gate remains in the shipped
-// weights as a documented, tested capability.
-// Anchor states must cover the velocities real play actually produces
+// Learned guidance toward a ground-truth token: self-forcing reduces how
+// fast error compounds per step, but a network this small still drifts
+// unboundedly given long enough. Real long-horizon video models fight this
+// by conditioning on a real reference (a keyframe token) and LEARNING to
+// steer their rollout toward it. Same trick here: the input carries an
+// extra token — the true [x,y,vx,vy] plus a presence flag — and training
+// uses conditioning dropout:
+//   - token zeroed, flag 0: plain dynamics (covered by buildDataset /
+//     selfForcingBatch — nothing new needed here).
+//   - token = the TRUE current state, flag 1: the state the network acts
+//     from is deliberately displaced (as if it had drifted there on its
+//     own), and the target is its own physics step PLUS a fixed gentle
+//     fraction (PULL_RATE) of the gap to the token — position and
+//     velocity, so the learned correction carries motion.
+// At inference the demo passes the real state as the token every step, so
+// the pull you see on screen is the network's own output.
+//
+// Design lesson, learned the hard way: an earlier version exposed the pull
+// strength as a continuous confidence input, expecting the network to
+// modulate the correction proportionally. Across two training attempts a
+// ~1,800-parameter net collapsed that dial to an all-or-nothing gate
+// (conf >= ~0.5 snapped hard, conf <= ~0.3 did nothing) — scaling one
+// input by another is a multiplicative interaction a tiny ReLU net fights
+// to represent. With a FIXED rate the correction is just a linear function
+// of (token - own state), which fits easily. The proportionality the demo
+// needs lives in the error vector, not in a learned dial.
+//
+// Token states must cover the velocities real play actually produces
 // (terminal speed under a held key is ~0.19, plus sign flips at wall
-// bounces). The first version sampled anchor velocities only in ±0.05, so
-// at speed the velocity part of the correction was out-of-distribution:
-// the model snapped position but dropped the anchor's motion. Drawing half
-// the anchors from genuine physics rollouts fixes the velocity carryover.
+// bounces). An early version sampled token velocities only in ±0.05, so at
+// speed the velocity part of the correction was out-of-distribution: the
+// model corrected position but dropped the token's motion. Drawing half
+// the tokens from genuine physics rollouts fixes the velocity carryover.
+const PULL_RATE = 0.15;
 function collectManifoldStates(n) {
   const states = [];
   let s = [(Math.random() * 2 - 1) * 0.8, (Math.random() * 2 - 1) * 0.8, 0, 0];
@@ -369,7 +370,7 @@ function collectManifoldStates(n) {
   return states;
 }
 
-function buildGroundingDataset(n) {
+function buildGuidanceDataset(n) {
   const X = [], Y = [];
   const manifold = collectManifoldStates(Math.ceil(n / 2));
   for (let i = 0; i < n; i++) {
@@ -386,39 +387,27 @@ function buildGroundingDataset(n) {
     const action = Math.floor(Math.random() * N_ACTIONS);
     const onehot = new Array(N_ACTIONS).fill(0);
     onehot[action] = 1;
-    const trueNext = physicsStep(trueState, action);
 
     // Simulate "the model thinks it's somewhere else" — a displaced own
-    // state, independent of confidence, so confidence must be read from its
-    // own explicit input rather than inferred from how displaced things look.
-    // Velocity displacement spans the full realistic range so corrections
-    // are learned for badly-wrong motion too, not just wrong position.
-    const posNoise = () => (Math.random() * 2 - 1) * (Math.random() < 0.5 ? 0.15 : 0.7);
-    const velNoise = () => (Math.random() * 2 - 1) * (Math.random() < 0.5 ? 0.03 : 0.2);
+    // state. Displacement magnitudes are weighted toward the small errors a
+    // guided rollout actually lives at, with a long tail for recovery from
+    // bad drift. Velocity displacement spans the full realistic range so
+    // corrections are learned for badly-wrong motion, not just position.
+    const posNoise = () => (Math.random() * 2 - 1) * (Math.random() < 0.6 ? 0.15 : 0.7);
+    const velNoise = () => (Math.random() * 2 - 1) * (Math.random() < 0.6 ? 0.03 : 0.2);
     const ownState = [
       trueState[0] + posNoise(), trueState[1] + posNoise(),
       trueState[2] + velNoise(), trueState[3] + velNoise(),
     ];
-    // Continuous, so inference can pick any pull strength — but biased
-    // heavily toward the low end. With plain uniform sampling the network
-    // learned a binary gate (conf>0.5 snaps, conf<0.2 does nothing at all):
-    // the low-conf targets differ from ordinary drift by so little that the
-    // proportional response there never got enough gradient signal, and
-    // low-conf is exactly the regime continuous soft guidance runs in.
-    const confidence = Math.random() < 0.5 ? Math.random() * 0.3 : Math.random();
 
+    // Target: the physics step from where the model actually is, plus a
+    // fixed gentle fraction of the gap to the token. Everything the demo's
+    // guided mode does is this learned rule.
     const ownNext = physicsStep(ownState, action);
-    const driftTarget = [
-      ownNext[0] - ownState[0], ownNext[1] - ownState[1],
-      ownNext[2] - ownState[2], ownNext[3] - ownState[3],
-    ];
-    const groundTarget = [
-      trueNext[0] - ownState[0], trueNext[1] - ownState[1],
-      trueNext[2] - ownState[2], trueNext[3] - ownState[3],
-    ];
-    const target = [0, 1, 2, 3].map((k) => (1 - confidence) * driftTarget[k] + confidence * groundTarget[k]);
+    const target = [0, 1, 2, 3].map((k) =>
+      (ownNext[k] - ownState[k]) + PULL_RATE * (trueState[k] - ownState[k]));
 
-    X.push([...ownState, ...onehot, ...trueState, confidence]);
+    X.push([...ownState, ...onehot, ...trueState, 1]);
     Y.push(target);
   }
   return { X, Y };
@@ -449,14 +438,14 @@ function main() {
     trainEpochs(model, adam, mixX, mixY, 3, 0.00015, 0.9, stepRef);
   }
 
-  console.log('Phase 3: periodic grounding (learning to trust an anchor when told to)');
+  console.log('Phase 3: learned guidance toward the GT token');
   {
-    const ground = buildGroundingDataset(40000);
+    const guide = buildGuidanceDataset(40000);
     shuffleInPlace(baseIdxPool);
-    const replay = baseIdxPool.slice(0, ground.X.length);
-    const mixX = ground.X.concat(replay.map((j) => base.X[j]));
-    const mixY = ground.Y.concat(replay.map((j) => base.Y[j]));
-    console.log(`${ground.X.length} grounding examples + ${replay.length} replayed base examples`);
+    const replay = baseIdxPool.slice(0, guide.X.length);
+    const mixX = guide.X.concat(replay.map((j) => base.X[j]));
+    const mixY = guide.Y.concat(replay.map((j) => base.Y[j]));
+    console.log(`${guide.X.length} guidance examples + ${replay.length} replayed base examples`);
     trainEpochs(model, adam, mixX, mixY, 6, 0.0015, 0.9, stepRef);
   }
 
@@ -497,28 +486,27 @@ function main() {
     console.log(`Mean drift over 100-step "hold right" rollout, no grounding: ${(totalDrift / 100).toFixed(4)}`);
   }
 
-  // Sanity check 3: same idle scenario, exercising the LEARNED anchor gate —
-  // a full-confidence pulse every GROUND_PERIOD steps. The browser demo
-  // doesn't drive this input (see the honest-outcome note above; it uses a
-  // state blend instead), but the gate ships in the weights, so verify it.
-  const GROUND_PERIOD = 15;
+  // Sanity check 3: what the browser's guided mode actually ships — the GT
+  // token passed with flag=1 EVERY step, correction fully produced by the
+  // network. Idle should settle to a small bounded offset (a memoryless
+  // net can only learn proportional-style control, which leaves a small
+  // steady-state error against its own bias — eliminating it would need
+  // memory for integral action). Play drift stays clearly visible.
   {
     let state = [0, 0, 0, 0];
     let modelState = [0, 0, 0, 0];
-    let maxDrift = 0;
-    for (let t = 0; t < 180; t++) {
+    let lateDrift = 0, lateN = 0;
+    for (let t = 0; t < 600; t++) {
+      const token = [...state, 1];
       state = physicsStep(state, 0);
-      const grounded = t % GROUND_PERIOD === GROUND_PERIOD - 1;
-      const anchor = grounded ? [...state, 1] : NO_ANCHOR;
-      const delta = forward(model, [...modelState, 1, 0, 0, 0, 0, ...anchor]);
+      const delta = forward(model, [...modelState, 1, 0, 0, 0, 0, ...token]);
       modelState = [modelState[0] + delta[0], modelState[1] + delta[1], modelState[2] + delta[2], modelState[3] + delta[3]];
-      const dx = state[0] - modelState[0], dy = state[1] - modelState[1];
-      maxDrift = Math.max(maxDrift, Math.sqrt(dx * dx + dy * dy));
+      if (t >= 500) { lateDrift += Math.hypot(state[0] - modelState[0], state[1] - modelState[1]); lateN++; }
     }
-    console.log(`Idle max drift over 180 frames, WITH periodic grounding: ${maxDrift.toFixed(4)}`);
+    console.log(`Idle, learned token guidance (browser demo): late-100-step avg drift=${(lateDrift / lateN).toFixed(4)}`);
   }
 
-  // Sanity check 4: sticky random play, with the same periodic grounding.
+  // Sanity check 4: sticky random play with the same learned guidance.
   {
     let state = [0, 0, 0, 0];
     let modelState = [0, 0, 0, 0];
@@ -527,69 +515,16 @@ function main() {
     for (let t = 0; t < 300; t++) {
       if (hold <= 0) { action = Math.floor(Math.random() * N_ACTIONS); hold = 1 + Math.floor(Math.random() * 15); }
       hold--;
+      const token = [...state, 1];
       state = physicsStep(state, action);
       const onehot = new Array(N_ACTIONS).fill(0);
       onehot[action] = 1;
-      const grounded = t % GROUND_PERIOD === GROUND_PERIOD - 1;
-      const anchor = grounded ? [...state, 1] : NO_ANCHOR;
-      const delta = forward(model, [...modelState, ...onehot, ...anchor]);
+      const delta = forward(model, [...modelState, ...onehot, ...token]);
       modelState = [modelState[0] + delta[0], modelState[1] + delta[1], modelState[2] + delta[2], modelState[3] + delta[3]];
-      const dx = state[0] - modelState[0], dy = state[1] - modelState[1];
-      const d = Math.sqrt(dx * dx + dy * dy);
+      const d = Math.hypot(state[0] - modelState[0], state[1] - modelState[1]);
       totalDrift += d; maxDrift = Math.max(maxDrift, d);
     }
-    console.log(`Sticky-random play, 300 steps, WITH periodic grounding: avg=${(totalDrift / 300).toFixed(4)} max=${maxDrift.toFixed(4)}`);
-  }
-
-  // Sanity check 5: what the browser demo actually ships — PI soft guidance
-  // toward the true trajectory before each step (keep GUIDE_KP/GUIDE_KI/
-  // GUIDE_I_CLAMP in sync with assets/js/worldmodel.js). The proportional
-  // pull alone stalls at a fixed offset where it balances the model's bias
-  // (P-controller steady-state error); the clamped integral term cancels
-  // the bias, so idle should converge to ~zero drift while play drift stays
-  // clearly nonzero and per-step movement never exceeds natural motion.
-  {
-    const GUIDE_KP = 0.08, GUIDE_KI = 0.004, GUIDE_I_CLAMP = 0.02;
-    const guide = (state, modelState, guideAcc) => {
-      for (let k = 0; k < 4; k++) {
-        const e = state[k] - modelState[k];
-        guideAcc[k] = Math.max(-GUIDE_I_CLAMP, Math.min(GUIDE_I_CLAMP, guideAcc[k] + GUIDE_KI * e));
-        modelState[k] += GUIDE_KP * e + guideAcc[k];
-      }
-    };
-
-    // idle: drift should converge to ~0 (integral cancels the bias)
-    {
-      let state = [0, 0, 0, 0], modelState = [0, 0, 0, 0], guideAcc = [0, 0, 0, 0];
-      let lateDrift = 0, lateN = 0;
-      for (let t = 0; t < 600; t++) {
-        guide(state, modelState, guideAcc);
-        state = physicsStep(state, 0);
-        const delta = forward(model, [...modelState, 1, 0, 0, 0, 0, ...NO_ANCHOR]);
-        modelState = [modelState[0] + delta[0], modelState[1] + delta[1], modelState[2] + delta[2], modelState[3] + delta[3]];
-        if (t >= 500) { lateDrift += Math.hypot(state[0] - modelState[0], state[1] - modelState[1]); lateN++; }
-      }
-      console.log(`Idle, WITH PI guidance (browser demo): late-100-step avg drift=${(lateDrift / lateN).toFixed(4)}`);
-    }
-
-    // sticky-random play: drift bounded but clearly visible
-    {
-      let state = [0, 0, 0, 0], modelState = [0, 0, 0, 0], guideAcc = [0, 0, 0, 0];
-      let action = 0, hold = 0, totalDrift = 0, maxDrift = 0;
-      for (let t = 0; t < 300; t++) {
-        if (hold <= 0) { action = Math.floor(Math.random() * N_ACTIONS); hold = 1 + Math.floor(Math.random() * 15); }
-        hold--;
-        guide(state, modelState, guideAcc);
-        state = physicsStep(state, action);
-        const onehot = new Array(N_ACTIONS).fill(0);
-        onehot[action] = 1;
-        const delta = forward(model, [...modelState, ...onehot, ...NO_ANCHOR]);
-        modelState = [modelState[0] + delta[0], modelState[1] + delta[1], modelState[2] + delta[2], modelState[3] + delta[3]];
-        const d = Math.hypot(state[0] - modelState[0], state[1] - modelState[1]);
-        totalDrift += d; maxDrift = Math.max(maxDrift, d);
-      }
-      console.log(`Sticky-random play, 300 steps, WITH PI guidance (browser demo): avg=${(totalDrift / 300).toFixed(4)} max=${maxDrift.toFixed(4)}`);
-    }
+    console.log(`Sticky-random play, 300 steps, learned token guidance: avg=${(totalDrift / 300).toFixed(4)} max=${maxDrift.toFixed(4)}`);
   }
 
   const out = {

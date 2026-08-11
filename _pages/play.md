@@ -15,9 +15,9 @@ It's a ~1,800-parameter network trained purely on simulated physics — never to
 That drift is mostly the model eating its own predictions — small errors compound. Two things fight it here, both real techniques, not hidden tricks:
 
 - [Self-forcing](https://arxiv.org/abs/2506.08009): alongside correct history, it also trains on states it reached by *its own* mistakes, learning to correct rather than spiral.
-- Soft guidance: each step, the model's state gets nudged a few percent toward the true trajectory — position *and* velocity, so corrections carry the motion instead of teleporting the ball. A proportional pull alone stalls at a fixed offset where it exactly balances the model's bias (P-controller steady-state error), so there's also a tiny integral term that cancels the bias — at rest it settles *onto* the true trajectory. Toggle **"Guidance"** off to watch the rollout run unaided.
+- Learned guidance: the true state is fed in as an extra conditioning token, and the network is trained — with conditioning dropout, like long-video models re-conditioning on keyframes — to steer its own rollout gently toward that token, position *and* velocity. The pull you see is the network's output, not post-processing. Toggle **"Guidance"** off to zero the token and watch it run unaided.
 
-(I first tried making the *network* learn that correction — true state as an extra input, pull toward it in proportion to a confidence signal. At ~1,800 parameters it refuses: it learns an all-or-nothing snap, never a proportional pull. The gate is still in the weights; the training script tells the story.)
+(One design lesson baked in: exposing the pull *strength* as a confidence input fails at this scale — ~1,800 parameters learn an all-or-nothing snap, never a proportional dial. Fixing the rate during training works, because then the correction is just a linear function of the error. And since a memoryless net can only learn proportional-style control, a small steady-state offset remains — integral action would need memory.)
 
 Even guided, the pull is weak enough that the model visibly wanders — the same failure mode real world model research spends most of its effort on, just visible here in seconds instead of minutes.
 
