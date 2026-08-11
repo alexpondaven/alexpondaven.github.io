@@ -1,4 +1,4 @@
-// Runs a tiny neural "world model" (~900 params, trained offline — see
+// Runs a tiny neural "world model" (~1,800 params, trained offline — see
 // /assets/worldmodel/train.js) entirely client-side. No server, no CDN
 // dependency: fetches its own weights.json and does the forward pass by hand.
 // Only loaded on /play/, so it has zero footprint on the rest of the site.
@@ -50,10 +50,15 @@
     return o;
   }
 
-  function modelStep(state, action) {
+  // anchor: null for "no correction", or a real [x,y,vx,vy] state the model
+  // was trained to trust when paired with confidence=1. See train.js's
+  // buildGroundingDataset for how that trust was taught.
+  const NO_ANCHOR = [0, 0, 0, 0, 0];
+  function modelStep(state, action, anchor) {
     const onehot = new Array(N_ACTIONS).fill(0);
     onehot[action] = 1;
-    const delta = forward([...state, ...onehot]);
+    const anchorInput = anchor ? [...anchor, 1] : NO_ANCHOR;
+    const delta = forward([...state, ...onehot, ...anchorInput]);
     return [state[0] + delta[0], state[1] + delta[1], state[2] + delta[2], state[3] + delta[3]];
   }
 
@@ -90,8 +95,18 @@
   let truthState = [0, 0, 0, 0];
   let showTruth = false;
   let running = true;
+  let grounding = true; // periodic correction pulses, on by default
+  let stepsSinceGround = 0;
+  let flashUntil = 0; // ms timestamp; draw() shows a brief ring while flashing
+
+  // Every GROUND_PERIOD model steps, feed the real physics state back in as
+  // a trusted "anchor" — the network was explicitly trained to snap toward
+  // it (see train.js). Between pulses it's a normal, uncorrected rollout, so
+  // real drift still happens; this just stops it from running away forever.
+  const GROUND_PERIOD = 15;
 
   const toggleBtn = document.getElementById('wm-toggle-truth');
+  const groundBtn = document.getElementById('wm-toggle-ground');
   const resetBtn = document.getElementById('wm-reset');
   const driftEl = document.getElementById('wm-drift');
   const statusEl = document.getElementById('wm-status');
@@ -103,10 +118,18 @@
       toggleBtn.setAttribute('aria-pressed', String(showTruth));
     });
   }
+  if (groundBtn) {
+    groundBtn.addEventListener('click', () => {
+      grounding = !grounding;
+      groundBtn.textContent = grounding ? 'Grounding: on' : 'Grounding: off';
+      groundBtn.setAttribute('aria-pressed', String(grounding));
+    });
+  }
   if (resetBtn) {
     resetBtn.addEventListener('click', () => {
       modelState = [0, 0, 0, 0];
       truthState = [0, 0, 0, 0];
+      stepsSinceGround = 0;
     });
   }
 
@@ -135,6 +158,15 @@
     }
 
     const [mx, my] = toPixel(modelState[0], modelState[1], w, h);
+    if (performance.now() < flashUntil) {
+      ctx.strokeStyle = accent();
+      ctx.globalAlpha = 0.5;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(mx, my, 16, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
     ctx.fillStyle = accent();
     ctx.beginPath();
     ctx.arc(mx, my, 10, 0, Math.PI * 2);
@@ -168,8 +200,20 @@
     if (running) {
       if (now - lastStepTime >= STEP_INTERVAL_MS) {
         lastStepTime = now;
-        modelState = modelStep(modelState, currentAction);
+
+        // Anchor must be the true state at the SAME timestep as modelState
+        // (before this step's transition) — that's what the network was
+        // trained on. Capture it before advancing truthState.
+        stepsSinceGround++;
+        const pulse = grounding && stepsSinceGround >= GROUND_PERIOD;
+        const anchor = pulse ? truthState : null;
+        if (pulse) {
+          stepsSinceGround = 0;
+          flashUntil = now + 220;
+        }
+
         truthState = physicsStep(truthState, currentAction);
+        modelState = modelStep(modelState, currentAction, anchor);
       }
       draw();
     }

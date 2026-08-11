@@ -1,7 +1,7 @@
-// Trains a tiny MLP "world model": given (state, action) it predicts the
-// change in state one physics step later. No external deps — everything is
-// hand-rolled (forward/backward pass, Adam) since the network is tiny
-// (9 -> 64 -> 4, ~900 params). Run with: node train.js
+// Trains a tiny MLP "world model": given (state, action, and an optional
+// "anchor" correction) it predicts the change in state one physics step
+// later. No external deps — everything is hand-rolled (forward/backward
+// pass, Adam) since the network is tiny. Run with: node train.js
 'use strict';
 
 // ---------------------------------------------------------------------------
@@ -66,7 +66,7 @@ function buildDataset(nEpisodes, stepsPerEpisode) {
       const next = physicsStep(state, action);
       const onehot = new Array(N_ACTIONS).fill(0);
       onehot[action] = 1;
-      X.push([...state, ...onehot]);
+      X.push([...state, ...onehot, ...NO_ANCHOR]);
       Y.push([next[0] - state[0], next[1] - state[1], next[2] - state[2], next[3] - state[3]]);
       state = next;
     }
@@ -81,7 +81,7 @@ function buildDataset(nEpisodes, stepsPerEpisode) {
   for (let i = 0; i < 30000; i++) {
     const x = (Math.random() * 2 - 1) * 0.95;
     const y = (Math.random() * 2 - 1) * 0.95;
-    X.push([x, y, 0, 0, 1, 0, 0, 0, 0]); // action=none onehot
+    X.push([x, y, 0, 0, 1, 0, 0, 0, 0, ...NO_ANCHOR]); // action=none onehot
     Y.push([0, 0, 0, 0]);
   }
   // Also anchor low-velocity decay-toward-rest under action=none, across a
@@ -97,7 +97,7 @@ function buildDataset(nEpisodes, stepsPerEpisode) {
     const vx = (Math.random() < 0.5 ? -1 : 1) * magX;
     const vy = (Math.random() < 0.5 ? -1 : 1) * magY;
     const next = physicsStep([x, y, vx, vy], 0);
-    X.push([x, y, vx, vy, 1, 0, 0, 0, 0]);
+    X.push([x, y, vx, vy, 1, 0, 0, 0, 0, ...NO_ANCHOR]);
     Y.push([next[0] - x, next[1] - y, next[2] - vx, next[3] - vy]);
   }
 
@@ -105,10 +105,17 @@ function buildDataset(nEpisodes, stepsPerEpisode) {
 }
 
 // ---------------------------------------------------------------------------
-// Tiny 2-layer MLP: in(9) -> hidden(64, ReLU) -> out(4, linear), trained with
-// hand-rolled backprop + Adam.
+// Tiny 2-layer MLP, trained with hand-rolled backprop + Adam. Input layout:
+//   [state(4), action onehot(N_ACTIONS), anchor state(4), anchor confidence(1)]
+// The anchor is normally all zeros with confidence=0, meaning "no outside
+// correction, behave normally." When confidence=1 and anchor holds a real
+// state, the network is trained to snap its prediction toward that anchor
+// regardless of how far its own state has drifted — see buildGroundingDataset.
 // ---------------------------------------------------------------------------
-const IN = 4 + N_ACTIONS; // 9
+const ANCHOR_DIM = 4;
+const CONF_DIM = 1;
+const NO_ANCHOR = [0, 0, 0, 0, 0]; // anchor(4) + confidence(1), all zero
+const IN = 4 + N_ACTIONS + ANCHOR_DIM + CONF_DIM; // 14
 const HIDDEN = 96;
 const OUT = 4;
 
@@ -294,7 +301,7 @@ function selfForcingBatch(model, nEpisodes, stepsPerEpisode) {
 
       // The "correct" thing to do from wherever the model actually is now.
       const trueNext = physicsStep(modelState, action);
-      X.push([...modelState, ...onehot]);
+      X.push([...modelState, ...onehot, ...NO_ANCHOR]);
       Y.push([
         trueNext[0] - modelState[0], trueNext[1] - modelState[1],
         trueNext[2] - modelState[2], trueNext[3] - modelState[3],
@@ -308,6 +315,68 @@ function selfForcingBatch(model, nEpisodes, stepsPerEpisode) {
         modelState[2] + delta[2], modelState[3] + delta[3],
       ];
     }
+  }
+  return { X, Y };
+}
+
+// ---------------------------------------------------------------------------
+// Periodic grounding: self-forcing reduces how fast error compounds per
+// step, but a network this small will still drift, unboundedly, given long
+// enough. Real long-horizon video world models fight this by periodically
+// re-conditioning on a real reference (a keyframe, a sparse ground-truth
+// pose) instead of purely on their own rollout. We teach the same trick:
+// an extra "anchor" state + confidence input the network can optionally be
+// told to trust. Training data:
+//   - confidence 0, anchor zeroed: same as ordinary dynamics (already
+//     covered by buildDataset/selfForcingBatch — nothing new needed here).
+//   - confidence in (0,1], anchor = the TRUE current state, but the state
+//     the network is asked to act from is deliberately displaced (as if it
+//     had drifted there on its own). The target blends between "keep
+//     drifting from where I am" and "snap toward what the anchor says
+//     reality actually is," weighted by confidence.
+// At inference we exploit this honestly: we already simulate real physics
+// every frame anyway (to draw the ground-truth overlay), so periodically we
+// feed that real state in as the anchor with confidence=1 — a deliberate,
+// visible correction pulse, not a silent swap to ground truth every frame
+// (which would remove the autoregressive drift entirely and defeat the
+// point of the demo).
+function buildGroundingDataset(n) {
+  const X = [], Y = [];
+  for (let i = 0; i < n; i++) {
+    const trueState = [
+      (Math.random() * 2 - 1) * 0.95,
+      (Math.random() * 2 - 1) * 0.95,
+      (Math.random() * 2 - 1) * 0.05,
+      (Math.random() * 2 - 1) * 0.05,
+    ];
+    const action = Math.floor(Math.random() * N_ACTIONS);
+    const onehot = new Array(N_ACTIONS).fill(0);
+    onehot[action] = 1;
+    const trueNext = physicsStep(trueState, action);
+
+    // Simulate "the model thinks it's somewhere else" — a displaced own
+    // state, independent of confidence, so confidence must be read from its
+    // own explicit input rather than inferred from how displaced things look.
+    const noise = () => (Math.random() * 2 - 1) * (Math.random() < 0.5 ? 0.15 : 0.7);
+    const ownState = [
+      trueState[0] + noise(), trueState[1] + noise(),
+      trueState[2] + noise() * 0.1, trueState[3] + noise() * 0.1,
+    ];
+    const confidence = Math.random(); // continuous, so inference can pick any pull strength
+
+    const ownNext = physicsStep(ownState, action);
+    const driftTarget = [
+      ownNext[0] - ownState[0], ownNext[1] - ownState[1],
+      ownNext[2] - ownState[2], ownNext[3] - ownState[3],
+    ];
+    const groundTarget = [
+      trueNext[0] - ownState[0], trueNext[1] - ownState[1],
+      trueNext[2] - ownState[2], trueNext[3] - ownState[3],
+    ];
+    const target = [0, 1, 2, 3].map((k) => (1 - confidence) * driftTarget[k] + confidence * groundTarget[k]);
+
+    X.push([...ownState, ...onehot, ...trueState, confidence]);
+    Y.push(target);
   }
   return { X, Y };
 }
@@ -329,10 +398,6 @@ function main() {
   const baseIdxPool = Array.from({ length: base.X.length }, (_, i) => i);
   for (let round = 1; round <= SELF_FORCE_ROUNDS; round++) {
     const sf = selfForcingBatch(model, 250, 40); // 10k self-visited states
-    // Mix with a RANDOM sample of the base dataset (not a fixed prefix —
-    // the rest-anchoring examples that keep idle drift low live later in
-    // the array, and a fixed-prefix slice never touched them, so the model
-    // was quietly forgetting them every round).
     shuffleInPlace(baseIdxPool);
     const replay = baseIdxPool.slice(0, sf.X.length);
     const mixX = sf.X.concat(replay.map((j) => base.X[j]));
@@ -341,15 +406,27 @@ function main() {
     trainEpochs(model, adam, mixX, mixY, 3, 0.00015, 0.9, stepRef);
   }
 
+  console.log('Phase 3: periodic grounding (learning to trust an anchor when told to)');
+  {
+    const ground = buildGroundingDataset(40000);
+    shuffleInPlace(baseIdxPool);
+    const replay = baseIdxPool.slice(0, ground.X.length);
+    const mixX = ground.X.concat(replay.map((j) => base.X[j]));
+    const mixY = ground.Y.concat(replay.map((j) => base.Y[j]));
+    console.log(`${ground.X.length} grounding examples + ${replay.length} replayed base examples`);
+    trainEpochs(model, adam, mixX, mixY, 6, 0.0015, 0.9, stepRef);
+  }
+
   // Sanity check 1: idle for 3 seconds (~180 frames @ 60fps) with no action
-  // pressed at all — this should stay essentially at rest, not run away.
+  // pressed at all, no grounding pulses — this should stay essentially at
+  // rest, not run away.
   {
     let state = [0, 0, 0, 0];
     let modelState = [0, 0, 0, 0];
     let maxDrift = 0;
     for (let t = 0; t < 180; t++) {
       state = physicsStep(state, 0);
-      const delta = forward(model, [...modelState, 1, 0, 0, 0, 0]);
+      const delta = forward(model, [...modelState, 1, 0, 0, 0, 0, ...NO_ANCHOR]);
       modelState = [modelState[0] + delta[0], modelState[1] + delta[1], modelState[2] + delta[2], modelState[3] + delta[3]];
       const dx = state[0] - modelState[0], dy = state[1] - modelState[1];
       maxDrift = Math.max(maxDrift, Math.sqrt(dx * dx + dy * dy));
@@ -357,9 +434,9 @@ function main() {
     console.log(`Idle (no key pressed) max drift over 180 frames: ${maxDrift.toFixed(4)}`);
   }
 
-  // Sanity check 2: hold "right" the whole time — this is allowed to drift
-  // (esp. near the wall bounce), that's the intended teaching moment once
-  // the user is actually playing.
+  // Sanity check 2: hold "right" the whole time, no grounding — this is
+  // allowed to drift (esp. near the wall bounce), that's the intended
+  // teaching moment once the user is actually playing.
   {
     let state = [0, 0, 0, 0];
     let modelState = [0, 0, 0, 0];
@@ -369,12 +446,55 @@ function main() {
       state = physicsStep(state, action);
       const onehot = new Array(N_ACTIONS).fill(0);
       onehot[action] = 1;
-      const delta = forward(model, [...modelState, ...onehot]);
+      const delta = forward(model, [...modelState, ...onehot, ...NO_ANCHOR]);
       modelState = [modelState[0] + delta[0], modelState[1] + delta[1], modelState[2] + delta[2], modelState[3] + delta[3]];
       const dx = state[0] - modelState[0], dy = state[1] - modelState[1];
       totalDrift += Math.sqrt(dx * dx + dy * dy);
     }
-    console.log(`Mean drift over 100-step "hold right" rollout: ${(totalDrift / 100).toFixed(4)}`);
+    console.log(`Mean drift over 100-step "hold right" rollout, no grounding: ${(totalDrift / 100).toFixed(4)}`);
+  }
+
+  // Sanity check 3: same idle scenario, but with a full-confidence grounding
+  // pulse every 60 steps (~1s at 60fps, ~3s at the browser's throttled 20Hz)
+  // — this is the mechanism the demo actually uses, so it should show a
+  // clearly bounded, much smaller drift than sanity check 1.
+  {
+    let state = [0, 0, 0, 0];
+    let modelState = [0, 0, 0, 0];
+    let maxDrift = 0;
+    for (let t = 0; t < 180; t++) {
+      state = physicsStep(state, 0);
+      const grounded = t % 60 === 59;
+      const anchor = grounded ? [...state, 1] : NO_ANCHOR;
+      const delta = forward(model, [...modelState, 1, 0, 0, 0, 0, ...anchor]);
+      modelState = [modelState[0] + delta[0], modelState[1] + delta[1], modelState[2] + delta[2], modelState[3] + delta[3]];
+      const dx = state[0] - modelState[0], dy = state[1] - modelState[1];
+      maxDrift = Math.max(maxDrift, Math.sqrt(dx * dx + dy * dy));
+    }
+    console.log(`Idle max drift over 180 frames, WITH periodic grounding: ${maxDrift.toFixed(4)}`);
+  }
+
+  // Sanity check 4: sticky random play, with the same periodic grounding.
+  {
+    let state = [0, 0, 0, 0];
+    let modelState = [0, 0, 0, 0];
+    let action = 0, hold = 0;
+    let totalDrift = 0, maxDrift = 0;
+    for (let t = 0; t < 300; t++) {
+      if (hold <= 0) { action = Math.floor(Math.random() * N_ACTIONS); hold = 1 + Math.floor(Math.random() * 15); }
+      hold--;
+      state = physicsStep(state, action);
+      const onehot = new Array(N_ACTIONS).fill(0);
+      onehot[action] = 1;
+      const grounded = t % 60 === 59;
+      const anchor = grounded ? [...state, 1] : NO_ANCHOR;
+      const delta = forward(model, [...modelState, ...onehot, ...anchor]);
+      modelState = [modelState[0] + delta[0], modelState[1] + delta[1], modelState[2] + delta[2], modelState[3] + delta[3]];
+      const dx = state[0] - modelState[0], dy = state[1] - modelState[1];
+      const d = Math.sqrt(dx * dx + dy * dy);
+      totalDrift += d; maxDrift = Math.max(maxDrift, d);
+    }
+    console.log(`Sticky-random play, 300 steps, WITH periodic grounding: avg=${(totalDrift / 300).toFixed(4)} max=${maxDrift.toFixed(4)}`);
   }
 
   const out = {
