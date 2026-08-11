@@ -1,0 +1,97 @@
+<!-- _includes/arena.html -->
+<div class="arena-page">
+  <div class="arena-frame">
+    <canvas id="arena-canvas"></canvas>
+    <div class="arena-hud">
+      <span>score: <strong id="arena-score">0</strong></span>
+    </div>
+  </div>
+
+  <div class="arena-controls">
+    <div class="arena-dpad">
+      <button class="arena-btn" data-action="1" aria-label="Up">↑</button>
+      <div class="arena-dpad-row">
+        <button class="arena-btn" data-action="3" aria-label="Left">←</button>
+        <button class="arena-btn" data-action="2" aria-label="Down">↓</button>
+        <button class="arena-btn" data-action="4" aria-label="Right">→</button>
+      </div>
+    </div>
+    <button id="arena-reset" class="arena-action-btn">Reset</button>
+  </div>
+
+  <p class="arena-status">Model status: <span id="arena-status">loading…</span></p>
+</div>
+
+<style>
+.arena-page { margin-top: 0.5rem; }
+.arena-frame {
+  position: relative;
+  width: 100%;
+  max-width: 640px;
+  aspect-ratio: 16 / 11;
+  margin: 0 auto;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--global-divider-color);
+  background: #0e1020;
+}
+#arena-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.arena-hud {
+  position: absolute;
+  left: 12px; top: 10px;
+  font-size: 0.85rem;
+  color: #e6e8f5;
+  background: rgba(14, 16, 32, 0.65);
+  border: 1px solid rgba(230, 232, 245, 0.2);
+  border-radius: 6px;
+  padding: 3px 10px;
+  pointer-events: none;
+}
+.arena-controls {
+  max-width: 640px;
+  margin: 1rem auto 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+.arena-dpad { display: flex; flex-direction: column; align-items: center; gap: 4px; user-select: none; }
+.arena-dpad-row { display: flex; gap: 4px; }
+.arena-btn {
+  width: 40px; height: 40px;
+  border-radius: 8px;
+  border: 1px solid var(--global-divider-color);
+  background: var(--global-card-bg-color);
+  color: var(--global-text-color);
+  font-size: 1.1rem;
+  cursor: pointer;
+  touch-action: none;
+}
+.arena-btn:active { background: var(--global-theme-color); color: white; }
+.arena-action-btn {
+  border: 1px solid var(--global-text-color);
+  background: transparent;
+  color: var(--global-text-color);
+  border-radius: 4px;
+  padding: 0.4rem 0.8rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.arena-action-btn:hover { color: var(--global-theme-color); border-color: var(--global-theme-color); }
+.arena-status {
+  max-width: 640px;
+  margin: 0.75rem auto 0;
+  font-size: 0.8rem;
+  color: var(--global-text-color-light);
+  text-align: center;
+}
+@media (max-width: 480px) { .arena-controls { justify-content: center; } }
+</style>
+
+<!-- three.js is vendored (assets/js/vendor/, MIT — see THREE_LICENSE) so the
+     page has no CDN dependency and keeps working offline. -->
+<script type="importmap">
+  { "imports": { "three": "{{ '/assets/js/vendor/three.module.min.js' | relative_url }}" } }
+</script>
+<script type="module" src="{{ '/assets/js/arena.js' | relative_url }}?v=2"></script>
