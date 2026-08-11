@@ -54,7 +54,7 @@
   // state the network snaps toward when passed with confidence 1. We don't
   // drive it here — a net this small learns that gate as all-or-nothing, so
   // using it looks like teleporting. The demo keeps it zeroed and applies
-  // guidance as a state blend instead (see GUIDE_RATE below).
+  // guidance as a state blend instead (see GUIDE_KP below).
   const NO_ANCHOR = [0, 0, 0, 0, 0];
   function modelStep(state, action) {
     const onehot = new Array(N_ACTIONS).fill(0);
@@ -101,11 +101,19 @@
   // Soft guidance: before each model step, blend the model's state a small
   // fraction toward the true trajectory — all four components, so the
   // correction carries velocity along with position instead of teleporting
-  // the ball. The rollout stays autoregressive and still visibly drifts;
-  // the rate sets the equilibrium: roughly (per-step model error) / rate.
-  // Measured with rate 0.08: max per-step movement matches natural motion
-  // (no visible snapping), idle stays calm, and play drift stays visible.
-  const GUIDE_RATE = 0.08;
+  // the ball. The proportional pull alone stalls at a constant offset:
+  // where the model's dynamics are biased (e.g. it holds a phantom drift
+  // velocity at rest), pull and bias cancel at offset ≈ bias/rate — classic
+  // P-controller steady-state error. The small integral term accumulates
+  // the remaining error and cancels that bias outright, so at rest the
+  // model settles ON the true trajectory; during active play the error
+  // changes too fast for the (clamped) integral to catch, so drift stays
+  // visible. Measured: idle converges to ~0 drift, play drift avg ~0.2,
+  // max per-step movement ≈ natural motion (no snapping).
+  const GUIDE_KP = 0.08;
+  const GUIDE_KI = 0.004;
+  const GUIDE_I_CLAMP = 0.02;
+  let guideAcc = [0, 0, 0, 0];
 
   const toggleBtn = document.getElementById('wm-toggle-truth');
   const groundBtn = document.getElementById('wm-toggle-ground');
@@ -123,6 +131,7 @@
   if (groundBtn) {
     groundBtn.addEventListener('click', () => {
       guidance = !guidance;
+      guideAcc = [0, 0, 0, 0]; // stale integral would kick on re-enable
       groundBtn.textContent = guidance ? 'Guidance: on' : 'Guidance: off';
       groundBtn.setAttribute('aria-pressed', String(guidance));
     });
@@ -131,6 +140,7 @@
     resetBtn.addEventListener('click', () => {
       modelState = [0, 0, 0, 0];
       truthState = [0, 0, 0, 0];
+      guideAcc = [0, 0, 0, 0];
     });
   }
 
@@ -196,12 +206,11 @@
         // Blend against the true state at the SAME timestep as modelState,
         // i.e. before either advances.
         if (guidance) {
-          modelState = [
-            modelState[0] + GUIDE_RATE * (truthState[0] - modelState[0]),
-            modelState[1] + GUIDE_RATE * (truthState[1] - modelState[1]),
-            modelState[2] + GUIDE_RATE * (truthState[2] - modelState[2]),
-            modelState[3] + GUIDE_RATE * (truthState[3] - modelState[3]),
-          ];
+          for (let k = 0; k < 4; k++) {
+            const e = truthState[k] - modelState[k];
+            guideAcc[k] = Math.max(-GUIDE_I_CLAMP, Math.min(GUIDE_I_CLAMP, guideAcc[k] + GUIDE_KI * e));
+            modelState[k] += GUIDE_KP * e + guideAcc[k];
+          }
         }
         truthState = physicsStep(truthState, currentAction);
         modelState = modelStep(modelState, currentAction);

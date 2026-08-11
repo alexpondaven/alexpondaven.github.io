@@ -541,31 +541,55 @@ function main() {
     console.log(`Sticky-random play, 300 steps, WITH periodic grounding: avg=${(totalDrift / 300).toFixed(4)} max=${maxDrift.toFixed(4)}`);
   }
 
-  // Sanity check 5: what the browser demo actually ships — soft guidance as
-  // a state blend toward the true trajectory before each step (keep
-  // GUIDE_RATE in sync with assets/js/worldmodel.js). Drift should be
-  // bounded but still clearly nonzero, and per-step movement never larger
-  // than natural motion.
+  // Sanity check 5: what the browser demo actually ships — PI soft guidance
+  // toward the true trajectory before each step (keep GUIDE_KP/GUIDE_KI/
+  // GUIDE_I_CLAMP in sync with assets/js/worldmodel.js). The proportional
+  // pull alone stalls at a fixed offset where it balances the model's bias
+  // (P-controller steady-state error); the clamped integral term cancels
+  // the bias, so idle should converge to ~zero drift while play drift stays
+  // clearly nonzero and per-step movement never exceeds natural motion.
   {
-    const GUIDE_RATE = 0.08;
-    let state = [0, 0, 0, 0];
-    let modelState = [0, 0, 0, 0];
-    let action = 0, hold = 0;
-    let totalDrift = 0, maxDrift = 0;
-    for (let t = 0; t < 300; t++) {
-      if (hold <= 0) { action = Math.floor(Math.random() * N_ACTIONS); hold = 1 + Math.floor(Math.random() * 15); }
-      hold--;
-      for (let k = 0; k < 4; k++) modelState[k] += GUIDE_RATE * (state[k] - modelState[k]);
-      state = physicsStep(state, action);
-      const onehot = new Array(N_ACTIONS).fill(0);
-      onehot[action] = 1;
-      const delta = forward(model, [...modelState, ...onehot, ...NO_ANCHOR]);
-      modelState = [modelState[0] + delta[0], modelState[1] + delta[1], modelState[2] + delta[2], modelState[3] + delta[3]];
-      const dx = state[0] - modelState[0], dy = state[1] - modelState[1];
-      const d = Math.sqrt(dx * dx + dy * dy);
-      totalDrift += d; maxDrift = Math.max(maxDrift, d);
+    const GUIDE_KP = 0.08, GUIDE_KI = 0.004, GUIDE_I_CLAMP = 0.02;
+    const guide = (state, modelState, guideAcc) => {
+      for (let k = 0; k < 4; k++) {
+        const e = state[k] - modelState[k];
+        guideAcc[k] = Math.max(-GUIDE_I_CLAMP, Math.min(GUIDE_I_CLAMP, guideAcc[k] + GUIDE_KI * e));
+        modelState[k] += GUIDE_KP * e + guideAcc[k];
+      }
+    };
+
+    // idle: drift should converge to ~0 (integral cancels the bias)
+    {
+      let state = [0, 0, 0, 0], modelState = [0, 0, 0, 0], guideAcc = [0, 0, 0, 0];
+      let lateDrift = 0, lateN = 0;
+      for (let t = 0; t < 600; t++) {
+        guide(state, modelState, guideAcc);
+        state = physicsStep(state, 0);
+        const delta = forward(model, [...modelState, 1, 0, 0, 0, 0, ...NO_ANCHOR]);
+        modelState = [modelState[0] + delta[0], modelState[1] + delta[1], modelState[2] + delta[2], modelState[3] + delta[3]];
+        if (t >= 500) { lateDrift += Math.hypot(state[0] - modelState[0], state[1] - modelState[1]); lateN++; }
+      }
+      console.log(`Idle, WITH PI guidance (browser demo): late-100-step avg drift=${(lateDrift / lateN).toFixed(4)}`);
     }
-    console.log(`Sticky-random play, 300 steps, WITH soft blend guidance (browser demo): avg=${(totalDrift / 300).toFixed(4)} max=${maxDrift.toFixed(4)}`);
+
+    // sticky-random play: drift bounded but clearly visible
+    {
+      let state = [0, 0, 0, 0], modelState = [0, 0, 0, 0], guideAcc = [0, 0, 0, 0];
+      let action = 0, hold = 0, totalDrift = 0, maxDrift = 0;
+      for (let t = 0; t < 300; t++) {
+        if (hold <= 0) { action = Math.floor(Math.random() * N_ACTIONS); hold = 1 + Math.floor(Math.random() * 15); }
+        hold--;
+        guide(state, modelState, guideAcc);
+        state = physicsStep(state, action);
+        const onehot = new Array(N_ACTIONS).fill(0);
+        onehot[action] = 1;
+        const delta = forward(model, [...modelState, ...onehot, ...NO_ANCHOR]);
+        modelState = [modelState[0] + delta[0], modelState[1] + delta[1], modelState[2] + delta[2], modelState[3] + delta[3]];
+        const d = Math.hypot(state[0] - modelState[0], state[1] - modelState[1]);
+        totalDrift += d; maxDrift = Math.max(maxDrift, d);
+      }
+      console.log(`Sticky-random play, 300 steps, WITH PI guidance (browser demo): avg=${(totalDrift / 300).toFixed(4)} max=${maxDrift.toFixed(4)}`);
+    }
   }
 
   const out = {
