@@ -14,4 +14,6 @@ Drive with **WASD** / arrow keys or the buttons. The nets were trained on a coup
 
 {% include arena.html %}
 
-Training script is [here](/assets/worldmodel/arena_train.js) — same hand-rolled backprop as the [/play/](/play/) demo, no ML libraries.
+**Autopilot** hands the ball to a ~460-parameter policy net that plays the game itself. The meta bit: it learned *entirely inside the world model* — behavior-cloned from a scripted demonstrator driving these same two nets, then refined by evolution on dream rollouts, rewarded for crates delivered to the ring. It has never interacted with the real simulator (a pocket-sized version of the world-models / Dreamer idea). Press any key to take over mid-run; release to hand back.
+
+Training scripts: [world model](/assets/worldmodel/arena_train.js), [policy](/assets/worldmodel/arena_agent_train.js) — same hand-rolled approach as the [/play/](/play/) demo, no ML libraries.

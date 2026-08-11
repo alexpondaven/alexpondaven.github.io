@@ -10,7 +10,7 @@ const statusEl = document.getElementById('arena-status');
 if (canvas) init();
 
 async function init() {
-  let weights;
+  let weights, policy = null;
   try {
     const r = await fetch('/assets/worldmodel/arena_weights.json');
     weights = await r.json();
@@ -18,6 +18,10 @@ async function init() {
     if (statusEl) statusEl.textContent = 'could not load model weights';
     return;
   }
+  try {
+    const r = await fetch('/assets/worldmodel/arena_policy.json');
+    if (r.ok) policy = await r.json();
+  } catch (e) { /* autopilot simply unavailable */ }
 
   // --- model runtime -------------------------------------------------------
   const N_ACTIONS = weights.meta.actions;
@@ -126,12 +130,70 @@ async function init() {
   const resetBtn = document.getElementById('arena-reset');
   if (resetBtn) resetBtn.addEventListener('click', resetGame);
 
+  // --- autopilot: a ~460-param policy net trained by evolution ENTIRELY
+  // inside this world model (it has never seen the real simulator).
+  // Feature layout must match arena_agent_train.js exactly.
+  const cornered = (c) => Math.abs(c.x) > 0.8 && Math.abs(c.y) > 0.8;
+  function pickTarget() {
+    let t = null, bd = Infinity;
+    for (const c of crates) {
+      if (cornered(c)) continue;
+      const d = Math.hypot(c.x - zone.x, c.y - zone.y);
+      if (d < bd) { bd = d; t = c; }
+    }
+    return t || crates[0];
+  }
+  function policyAction() {
+    const crate = pickTarget();
+    const dzx = zone.x - crate.x, dzy = zone.y - crate.y;
+    const dz = Math.hypot(dzx, dzy) || 1;
+    const ux = dzx / dz, uy = dzy / dz;
+    const bx = crate.x - ball.x, by = crate.y - ball.y;
+    const db = Math.hypot(bx, by) || 1;
+    const feat = [
+      ball.x, ball.y, ball.vx, ball.vy,
+      bx, by, db,
+      ux, uy, dz,
+      crate.x - ux * 0.22 - ball.x, crate.y - uy * 0.22 - ball.y,
+      (bx / db) * ux + (by / db) * uy,
+    ];
+    const { feat: F, hidden: H, actions: A } = policy.meta;
+    const th = policy.theta;
+    const h = new Float64Array(H);
+    for (let j = 0; j < H; j++) {
+      let acc = th[F * H + j];
+      for (let i = 0; i < F; i++) acc += feat[i] * th[i * H + j];
+      h[j] = acc > 0 ? acc : 0;
+    }
+    const p = F * H + H;
+    let best = 0, bestV = -Infinity;
+    for (let k = 0; k < A; k++) {
+      let acc = th[p + H * A + k];
+      for (let j = 0; j < H; j++) acc += h[j] * th[p + j * A + k];
+      if (acc > bestV) { bestV = acc; best = k; }
+    }
+    return best;
+  }
+  let autopilot = false;
+  const autoBtn = document.getElementById('arena-auto');
+  if (autoBtn && policy) {
+    autoBtn.addEventListener('click', () => {
+      autopilot = !autopilot;
+      autoBtn.textContent = `Autopilot: ${autopilot ? 'on' : 'off'}`;
+      autoBtn.classList.toggle('is-on', autopilot);
+    });
+  } else if (autoBtn) {
+    autoBtn.disabled = true;
+  }
+
   // --- model step (20Hz) ---------------------------------------------------
   let zoneFlash = 0;
   const cornerTicks = [0, 0, 0];
   function stepGame() {
+    // player input always wins; the agent only drives idle moments
+    const action = (autopilot && held.size === 0 && policy) ? policyAction() : currentAction;
     const onehot = new Array(N_ACTIONS).fill(0);
-    onehot[currentAction] = 1;
+    onehot[action] = 1;
     const nb = nearest(ball, crates, -1);
     const bd = forward(weights.ball, [ball.x, ball.y, ball.vx, ball.vy, ...onehot, ...rel(ball, nb), ...proximity(ball, nb)]);
     const cds = crates.map((c, i) => {
