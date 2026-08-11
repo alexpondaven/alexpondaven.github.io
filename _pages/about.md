@@ -29,6 +29,7 @@ Right now I'm a research intern at [Odyssey](https://odyssey.ml/), building **mu
 - 📄 &nbsp;**ECCV 2026** — [ActionParty](https://action-party.github.io/): binding actions to multiple players in a world model
 - 📄 &nbsp;**CVPR 2025** — [DiTFlow](https://ditflow.github.io/): motion transfer for diffusion transformers
 - 🌍 &nbsp;**NeurIPS 2022** — [Satellite inpainting](https://www.climatechange.ai/papers/neurips2022/24) with neural processes for climate
+- 🕹️ &nbsp;**Try one** — a [tiny world model](/play/) you can drive around, running right in your browser
 
 </div>
 

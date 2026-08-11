@@ -383,7 +383,7 @@ function buildGroundingDataset(n) {
 
 function main() {
   console.log('Building base (teacher-forced) dataset...');
-  const base = buildDataset(400, 150); // ~136k transitions incl. rest anchoring
+  const base = buildDataset(400, 150); // 120k transitions incl. rest anchoring
   console.log(`Base dataset: ${base.X.length} transitions`);
 
   const model = initModel();
@@ -397,7 +397,7 @@ function main() {
   const SELF_FORCE_ROUNDS = 6;
   const baseIdxPool = Array.from({ length: base.X.length }, (_, i) => i);
   for (let round = 1; round <= SELF_FORCE_ROUNDS; round++) {
-    const sf = selfForcingBatch(model, 250, 40); // 10k self-visited states
+    const sf = selfForcingBatch(model, 250, 40); // ~14k self-visited states
     shuffleInPlace(baseIdxPool);
     const replay = baseIdxPool.slice(0, sf.X.length);
     const mixX = sf.X.concat(replay.map((j) => base.X[j]));
@@ -417,9 +417,9 @@ function main() {
     trainEpochs(model, adam, mixX, mixY, 6, 0.0015, 0.9, stepRef);
   }
 
-  // Sanity check 1: idle for 3 seconds (~180 frames @ 60fps) with no action
-  // pressed at all, no grounding pulses — this should stay essentially at
-  // rest, not run away.
+  // Sanity check 1: idle for 180 model steps (~9s at the browser's 20Hz
+  // step rate) with no action pressed at all, no grounding pulses — this
+  // should stay essentially at rest, not run away.
   {
     let state = [0, 0, 0, 0];
     let modelState = [0, 0, 0, 0];
@@ -455,16 +455,17 @@ function main() {
   }
 
   // Sanity check 3: same idle scenario, but with a full-confidence grounding
-  // pulse every 60 steps (~1s at 60fps, ~3s at the browser's throttled 20Hz)
-  // — this is the mechanism the demo actually uses, so it should show a
-  // clearly bounded, much smaller drift than sanity check 1.
+  // pulse every GROUND_PERIOD steps — the exact cadence the browser demo
+  // uses (keep in sync with GROUND_PERIOD in assets/js/worldmodel.js). This
+  // should show a clearly bounded, much smaller drift than sanity check 1.
+  const GROUND_PERIOD = 15;
   {
     let state = [0, 0, 0, 0];
     let modelState = [0, 0, 0, 0];
     let maxDrift = 0;
     for (let t = 0; t < 180; t++) {
       state = physicsStep(state, 0);
-      const grounded = t % 60 === 59;
+      const grounded = t % GROUND_PERIOD === GROUND_PERIOD - 1;
       const anchor = grounded ? [...state, 1] : NO_ANCHOR;
       const delta = forward(model, [...modelState, 1, 0, 0, 0, 0, ...anchor]);
       modelState = [modelState[0] + delta[0], modelState[1] + delta[1], modelState[2] + delta[2], modelState[3] + delta[3]];
@@ -486,7 +487,7 @@ function main() {
       state = physicsStep(state, action);
       const onehot = new Array(N_ACTIONS).fill(0);
       onehot[action] = 1;
-      const grounded = t % 60 === 59;
+      const grounded = t % GROUND_PERIOD === GROUND_PERIOD - 1;
       const anchor = grounded ? [...state, 1] : NO_ANCHOR;
       const delta = forward(model, [...modelState, ...onehot, ...anchor]);
       modelState = [modelState[0] + delta[0], modelState[1] + delta[1], modelState[2] + delta[2], modelState[3] + delta[3]];
