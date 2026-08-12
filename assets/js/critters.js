@@ -187,6 +187,7 @@ async function init() {
     const saved = JSON.parse(localStorage.getItem(LEARN_KEY));
     if (saved && saved.brains && saved.elder && saved.archive) learn = saved;
   } catch (e) { /* fresh dynasty */ }
+  if (!learn.thief) learn.thief = { laneVals: [0, 0, 0], steals: 0, lastSteal: null };
   function saveLearn() {
     try { localStorage.setItem(LEARN_KEY, JSON.stringify(learn)); } catch (e) { /* private mode */ }
   }
@@ -292,6 +293,21 @@ async function init() {
   stage.addEventListener('pointerdown', (e) => {
     const rect = stage.getBoundingClientRect();
     const n = toNorm({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+    // bonk the Plagiarist: it panics, spills hoarded morsels, and bolts
+    if (Math.hypot(thief.x - n.x, thief.y - n.y) < 0.16) {
+      const spill = Math.min(thief.belly, 2);
+      const p = toPx(thief);
+      for (let i = 0; i < spill; i++) {
+        morsels.push({ x: p.x, y: p.y, vx: (Math.random() - 0.5) * 3, vy: -2.5 - Math.random(), settled: false });
+      }
+      thief.belly -= spill;
+      thief.state = 'flee';
+      thief.fleeT = 90;
+      thief.targetLane = -1;
+      stats.bonks++;
+      announce(spill > 0 ? `you bonked the Plagiarist — it dropped ${spill} hoarded morsel${spill > 1 ? 's' : ''}!` : 'you bonked the Plagiarist — it fled empty-bellied');
+      return;
+    }
     for (const c of critters) {
       if (!c.alive) continue;
       const dx = c.x - n.x, dy = c.y - n.y;
@@ -343,10 +359,89 @@ async function init() {
   };
   let interregnum = 0, ancestorGlow = 0, panelT = 0;
 
+  // --- the PLAGIARIST: the adversary -------------------------------------------
+  // A masked rival who steals half-spelled words from unguarded lanes and
+  // presents them to the elder as its own. It learns which wordsmith's lane
+  // pays best (a bandit over victims), and its cowardice is the steering
+  // net's own flee channel — wordsmiths, the elder and your cursor all read
+  // as threats, so it only strikes when the coast is clear.
+  const thief = {
+    role: 'thief', alive: true,
+    x: -0.9, y: -0.9, vx: 0, vy: 0,
+    state: 'lurk',            // lurk -> stalk -> snatch -> flee
+    targetLane: -1, dwell: 0,
+    raidT: 500 + Math.random() * 300,
+    belly: 0, energy: 0.7,
+    fleeT: 0,
+    blinkT: 100, blink: 0, seed: 8181,
+  };
+  const EDGE_SPOTS = [{ x: -0.88, y: -0.85 }, { x: 0.88, y: -0.85 }, { x: -0.88, y: 0.1 }, { x: 0.88, y: 0.1 }];
+  // who can spook the thief: only the mark itself, the elder, and the
+  // visitor's cursor — rival wordsmiths are far too territorial to guard a
+  // competitor's lane
+  function nearestGuard(px, py, victim) {
+    let best = null, bd = Infinity;
+    if (victim && victim.alive) {
+      bd = Math.hypot(victim.x - px, victim.y - py);
+      best = victim;
+    }
+    if (elder.alive) {
+      const d = Math.hypot(elder.x - px, elder.y - py);
+      if (d < bd) { bd = d; best = elder; }
+    }
+    if (cursor.active) {
+      const d = Math.hypot(cursor.x - px, cursor.y - py);
+      if (d < bd) { bd = d; best = cursor; }
+    }
+    return { guard: best, dist: bd };
+  }
+  function stealFrom(victim) {
+    const word = victim.placed.map((i) => letters[i].low).join('');
+    const { score, novel } = judgeWord(word);
+    // the victim pays: all that hauling, and the word is now USED UP in the
+    // elder's archive — pure loss flows into its grammar and its map
+    const cost = Math.min(2.5, victim.effort / 450);
+    reinforce(victim.brain, victim.proposal, -cost);
+    const cell = victim.proposal.cell >= 0 ? victim.proposal.cell : cellOf(victim.x, victim.y);
+    victim.brain.cells[cell] += 0.3 * (-cost - victim.brain.cells[cell]);
+    victim.brain.words++;
+    victim.brain.avgR += 0.15 * (-cost - victim.brain.avgR);
+    victim.lastWord = { word: word + ' (stolen!)', score: 0, cost: +cost.toFixed(1), net: +(-cost).toFixed(1) };
+    // the thief profits: verdict, morsels straight into its belly, and a
+    // sharper sense of which lane to rob next
+    learn.thief.laneVals[victim.lane] += 0.35 * (score - learn.thief.laneVals[victim.lane]);
+    learn.thief.steals++;
+    learn.thief.lastSteal = { word, score: +score.toFixed(1) };
+    thief.belly = Math.min(6, thief.belly + Math.max(1, Math.round(score)));
+    thief.energy = Math.min(1, thief.energy + 0.2 + 0.1 * Math.max(0, score));
+    stats.steals++;
+    const mid = laneSlot(victim.lane, 2);
+    verdicts.push({ x: mid.x, y: laneY(victim.lane) - 34, txt: `stolen! +${score.toFixed(1)} to the Plagiarist`, word, savored: false, t: 130 });
+    announce(`the Plagiarist stole “${word}” from the ${victim.lane === 0 ? 'indigo' : victim.lane === 1 ? 'green' : 'pink'} wordsmith${novel ? ' — and the elder savored it' : ''}`);
+    // clean up the victim's ruined proposal
+    if (victim.carrying >= 0) {
+      const L = letters[victim.carrying];
+      L.at = 'ground';
+      L.pos = toPx({ x: victim.x, y: victim.y });
+      victim.carrying = -1;
+    }
+    for (const li of victim.proposal.claimIdx) {
+      const L = letters[li];
+      L.claimed = false;
+      if (L.at === 'placed' || L.at === 'ground') sendHome(L);
+    }
+    elder.queue = elder.queue.filter((l) => l !== victim.lane);
+    if (elder.judging === victim.lane) { elder.judging = -1; elder.judgeT = 0; }
+    victim.proposal = null;
+    victim.placed = [];
+    victim.state = 'rest';
+    victim.restT = 60;
+  }
+
   const verdicts = [];      // {x, y, txt, word, savored, t}
   const flights = [];       // letters flying home: {letter, fx, fy, t, dur}
   const morsels = [];       // food the elder conjures: {x, y, vx, vy, settled}
-  const stats = { proposed: 0, judged: 0, savored: 0, newWords: 0, successions: 0, hatched: 0, morselsMade: 0, morselsEaten: 0, starved: 0, contentions: 0 };
+  const stats = { proposed: 0, judged: 0, savored: 0, newWords: 0, successions: 0, hatched: 0, morselsMade: 0, morselsEaten: 0, starved: 0, contentions: 0, steals: 0, bonks: 0, raidsFoiled: 0 };
   window.__colony = stats;
 
   // a pleased elder PRODUCES: morsels of food arc out of a good verdict, and
@@ -724,6 +819,86 @@ async function init() {
       elder.fade = Math.max(0, elder.fade - 0.03);
     }
 
+    // --- the Plagiarist ---------------------------------------------------------------
+    {
+      const T = thief;
+      T.energy = Math.max(0, T.energy - 0.00012);
+      if (T.energy < 0.5 && T.belly > 0) { T.belly--; T.energy = Math.min(1, T.energy + 0.25); }
+      let target = null;
+      if (T.state === 'flee') {
+        let far = EDGE_SPOTS[0], fd = -1;
+        for (const s of EDGE_SPOTS) {
+          const d = Math.hypot(s.x - T.x, s.y - T.y);
+          if (d > fd) { fd = d; far = s; }
+        }
+        target = far;
+        if (--T.fleeT <= 0) { T.state = 'lurk'; T.raidT = 400 + Math.random() * 500; }
+      } else if (T.state === 'lurk') {
+        if (!T.spot || Math.random() < 0.004) T.spot = EDGE_SPOTS[Math.floor(Math.random() * EDGE_SPOTS.length)];
+        target = T.spot;
+        // hungrier thieves raid sooner
+        T.raidT -= T.energy < 0.35 ? 2 : 1;
+        if (T.raidT <= 0 && elder.alive) {
+          // pick a victim: lanes with exposed letters, weighted by learned value
+          const cands = critters.filter((c) => c.alive && c.proposal && c.placed.length >= 1);
+          if (cands.length) {
+            let best = cands[0], bv = -Infinity;
+            for (const c of cands) {
+              const v = learn.thief.laneVals[c.lane] + Math.random() * 0.8;
+              if (v > bv) { bv = v; best = c; }
+            }
+            T.targetLane = best.lane;
+            T.state = 'stalk';
+          } else {
+            T.raidT = 120;
+          }
+        }
+      } else if (T.state === 'stalk' || T.state === 'snatch') {
+        const victim = critters[T.targetLane];
+        const valid = victim && victim.alive && victim.proposal && victim.placed.length >= 1 && elder.alive;
+        if (!valid) {
+          T.state = 'lurk';
+          T.raidT = 300 + Math.random() * 300;
+          T.targetLane = -1;
+        } else {
+          const mid = laneSlot(T.targetLane, 2);
+          const midN = toNorm({ x: mid.x, y: mid.y });
+          target = midN;
+          const { dist } = nearestGuard(T.x, T.y, victim);
+          // the heist clock only runs while the mark is genuinely away from
+          // its lane — wordsmiths that forage far from home are exposed
+          const victimAway = Math.hypot(victim.x - midN.x, victim.y - midN.y) > 0.32;
+          if (dist < 0.2 || (T.state === 'snatch' && !victimAway)) {
+            // spotted (or the mark came home)! the heist is off
+            learn.thief.laneVals[T.targetLane] -= 0.05;
+            T.state = 'flee';
+            T.fleeT = 60;
+            T.targetLane = -1;
+            stats.raidsFoiled++;
+          } else {
+            const dl = Math.hypot(midN.x - T.x, midN.y - T.y);
+            if (T.state === 'stalk' && dl < 0.12 && victimAway) { T.state = 'snatch'; T.dwell = 25; }
+            if (T.state === 'snatch' && --T.dwell <= 0) {
+              stealFrom(victim);
+              T.state = 'flee';
+              T.fleeT = 100;
+              T.targetLane = -1;
+            }
+          }
+        }
+      }
+      if (target) {
+        // its fear is the steering net's own flee channel: the nearest
+        // legitimate guard is fed in as the predator
+        const victim = T.targetLane >= 0 ? critters[T.targetLane] : null;
+        const { guard, dist } = nearestGuard(T.x, T.y, victim);
+        const threat = guard && dist < 0.45 ? guard : null;
+        steer(T, target, threat, T.state === 'snatch' ? 0.35 : 0.8);
+      }
+      if (--T.blinkT <= 0) { T.blink = 5; T.blinkT = 120 + Math.random() * 150; }
+      if (T.blink > 0) T.blink--;
+    }
+
     if (statusEl) {
       const t = elder.taste;
       const vocab = Object.keys(learn.archive).length;
@@ -737,7 +912,7 @@ async function init() {
     // the strategy panel: each wordsmith's learned niche, in the open
     if (panelEl && (panelT = (panelT + 1) % 30) === 0) {
       const CELL_NAMES = ['NW', 'N', 'NE', 'far NE', 'W', 'mid', 'E', 'far E', 'SW', 'S', 'SE', 'far SE'];
-      panelEl.innerHTML = critters.map((c) => {
+      const rows = critters.map((c) => {
         if (!c.alive) return `<div><span class="cp-dot" style="background:${WORKER_COLORS[c.lane]}"></span>an egg incubates…</div>`;
         const fav = c.brain.cells.indexOf(Math.max(...c.brain.cells));
         const last = c.lastWord
@@ -745,7 +920,15 @@ async function init() {
           : 'has not presented yet';
         return `<div><span class="cp-dot" style="background:${c.color}"></span>` +
           `gen ${c.brain.gen} · energy ${(c.energy * 100).toFixed(0)}% · forages ${CELL_NAMES[fav] || fav} · avg ${c.brain.avgR >= 0 ? '+' : ''}${c.brain.avgR.toFixed(2)}/word · ${last}</div>`;
-      }).join('');
+      });
+      const tv = learn.thief.laneVals;
+      const mark = tv.indexOf(Math.max(...tv));
+      const laneName = ['indigo', 'green', 'pink'][mark] || '?';
+      const doing = thief.state === 'lurk' ? 'lurking' : thief.state === 'flee' ? 'fleeing' : 'ON A HEIST';
+      rows.push(`<div><span class="cp-dot" style="background:#475569"></span>` +
+        `the Plagiarist · ${doing} · favors robbing the ${laneName} lane · ${learn.thief.steals} words stolen` +
+        `${learn.thief.lastSteal ? ` · last haul <span class="cp-word">“${learn.thief.lastSteal.word}”</span> +${learn.thief.lastSteal.score}` : ''} · click it to bonk</div>`);
+      panelEl.innerHTML = rows.join('');
     }
   }
 
@@ -920,6 +1103,48 @@ async function init() {
         ctx.fillStyle = inkColor;
         ctx.fillText(L.ch, 0, 0);
         ctx.restore();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // the Plagiarist: masked, translucent while lurking, low and slow mid-heist
+    {
+      const T = thief;
+      const p = smooth(T);
+      const speed = Math.hypot(T.vx, T.vy);
+      const ang = Math.atan2(T.vy, T.vx);
+      const sneakSquat = T.state === 'snatch' ? 0.25 : 0;
+      const r = 8.5 + Math.min(3, T.belly * 0.5);
+      ctx.globalAlpha = T.state === 'lurk' ? 0.55 : 1;
+      ctx.fillStyle = 'rgba(0,0,0,0.16)';
+      ctx.beginPath();
+      ctx.ellipse(p.x, p.y + 8, r * 0.9, 2.6, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.save();
+      ctx.translate(p.x, p.y + sneakSquat * 3);
+      ctx.rotate(ang * Math.min(1, speed * 40));
+      ctx.fillStyle = '#475569';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, r * (1 + Math.min(0.2, speed * 6)), r * (1 - sneakSquat), 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      // the mask
+      ctx.fillStyle = '#1e293b';
+      ctx.fillRect(p.x - 7, p.y - 5 + sneakSquat * 3, 14, 5);
+      for (const side of [-1, 1]) {
+        ctx.fillStyle = '#f8fafc';
+        ctx.beginPath();
+        if (T.blink > 0) {
+          ctx.fillRect(p.x + side * 3.4 - 2, p.y - 2.8 + sneakSquat * 3, 4, 1.2);
+        } else {
+          ctx.arc(p.x + side * 3.4, p.y - 2.5 + sneakSquat * 3, 2, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = '#0f172a';
+          ctx.beginPath();
+          const look = speed > 0.003 ? { x: Math.cos(ang), y: Math.sin(ang) } : { x: 0, y: 0.3 };
+          ctx.arc(p.x + side * 3.4 + look.x, p.y - 2.5 + look.y + sneakSquat * 3, 1, 0, Math.PI * 2);
+        }
+        ctx.fill();
       }
       ctx.globalAlpha = 1;
     }
