@@ -6,6 +6,7 @@
   </div>
   <p class="colony-status"><span id="colony-status">waking the colony…</span></p>
   <p class="colony-status"><span id="colony-event" style="transition: opacity 1.5s;"></span></p>
+  <div id="colony-panel"></div>
 </div>
 
 <style>
@@ -48,4 +49,22 @@
 }
 </style>
 
-<script type="module" src="{{ '/assets/js/critters.js' | relative_url }}?v=6"></script>
+<style>
+#colony-panel {
+  max-width: 680px;
+  margin: 0.6rem auto 0;
+  font-size: 0.78rem;
+  line-height: 1.7;
+  color: var(--global-text-color-light);
+  font-variant-numeric: tabular-nums;
+}
+#colony-panel .cp-dot {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: baseline;
+}
+#colony-panel .cp-word { color: var(--global-text-color); font-style: italic; }
+</style>
+<script type="module" src="{{ '/assets/js/critters.js' | relative_url }}?v=7"></script>
