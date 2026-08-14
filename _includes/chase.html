@@ -1,0 +1,109 @@
+<!-- _includes/chase.html -->
+<div class="chase-page">
+  <div class="chase-frame">
+    <canvas id="chase-canvas"></canvas>
+    <div class="chase-hud">
+      <span>orbs: <strong id="chase-score">0</strong></span>
+      <span>best run: <strong id="chase-best">0</strong></span>
+      <span style="color:#f87171">hunter mind: <strong id="chase-mind">33%</strong></span>
+    </div>
+    <div id="chase-flash"></div>
+  </div>
+
+  <div class="chase-controls">
+    <div class="chase-dpad">
+      <button class="chase-btn" data-action="1" aria-label="Up">↑</button>
+      <div class="chase-dpad-row">
+        <button class="chase-btn" data-action="3" aria-label="Left">←</button>
+        <button class="chase-btn" data-action="2" aria-label="Down">↓</button>
+        <button class="chase-btn" data-action="4" aria-label="Right">→</button>
+      </div>
+    </div>
+    <button id="chase-premo" class="chase-action-btn">Hold for Premonition</button>
+  </div>
+
+  <p class="chase-status">Model status: <span id="chase-status">loading…</span></p>
+</div>
+
+<style>
+.chase-page { margin-top: 0.5rem; }
+.chase-frame {
+  position: relative;
+  width: 100%;
+  max-width: 640px;
+  aspect-ratio: 16 / 11;
+  margin: 0 auto;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--global-divider-color);
+  background: #07070f;
+}
+#chase-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.chase-hud {
+  position: absolute;
+  left: 12px; top: 10px;
+  display: flex; gap: 14px;
+  font-size: 0.85rem;
+  color: #e6e8f5;
+  background: rgba(7, 7, 15, 0.65);
+  border: 1px solid rgba(230, 232, 245, 0.2);
+  border-radius: 6px;
+  padding: 3px 10px;
+  pointer-events: none;
+}
+#chase-flash {
+  position: absolute; inset: 0;
+  background: radial-gradient(ellipse at center, transparent 40%, rgba(239,68,68,0.55) 100%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+.chase-controls {
+  max-width: 640px;
+  margin: 1rem auto 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+.chase-dpad { display: flex; flex-direction: column; align-items: center; gap: 4px; user-select: none; }
+.chase-dpad-row { display: flex; gap: 4px; }
+.chase-btn {
+  width: 40px; height: 40px;
+  border-radius: 8px;
+  border: 1px solid var(--global-divider-color);
+  background: var(--global-card-bg-color);
+  color: var(--global-text-color);
+  font-size: 1.1rem;
+  cursor: pointer;
+  touch-action: none;
+}
+.chase-btn:active { background: var(--global-theme-color); color: white; }
+.chase-action-btn {
+  border: 1px solid var(--global-text-color);
+  background: transparent;
+  color: var(--global-text-color);
+  border-radius: 4px;
+  padding: 0.4rem 0.8rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+}
+.chase-action-btn:hover, .chase-action-btn.is-on { color: var(--global-theme-color); border-color: var(--global-theme-color); }
+.chase-status {
+  max-width: 640px;
+  margin: 0.75rem auto 0;
+  font-size: 0.8rem;
+  color: var(--global-text-color-light);
+  text-align: center;
+}
+@media (max-width: 480px) { .chase-controls { justify-content: center; } }
+</style>
+
+<!-- three.js is vendored (assets/js/vendor/, MIT — see THREE_LICENSE) -->
+<script type="importmap">
+  { "imports": { "three": "{{ '/assets/js/vendor/three.module.min.js' | relative_url }}" } }
+</script>
+<script type="module" src="{{ '/assets/js/chase.js' | relative_url }}?v=1"></script>
