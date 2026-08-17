@@ -369,7 +369,7 @@
     .then((r) => r.json())
     .then((w) => {
       model = w;
-      if (statusEl) statusEl.textContent = `loaded — ${w.meta.hidden}-unit hidden layer, ~${(w.W1.length + w.b1.length + w.W2.length + w.b2.length).toLocaleString()} parameters`;
+      if (statusEl) statusEl.textContent = `one net, ${(w.W1.length + w.b1.length + w.W2.length + w.b2.length).toLocaleString()} parameters`;
       resize();
       requestAnimationFrame(tick);
     })

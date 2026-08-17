@@ -22,7 +22,7 @@
     </div>
   </div>
 
-  <p class="arena-status">Model status: <span id="arena-status">loading…</span></p>
+  <p class="arena-status"><span id="arena-status">loading…</span></p>
 </div>
 
 <style>
@@ -99,4 +99,4 @@
 {% unless include.skip_map %}<script type="importmap">
   { "imports": { "three": "{{ '/assets/js/vendor/three.module.min.js' | relative_url }}" } }
 </script>{% endunless %}
-<script type="module" src="{{ '/assets/js/arena.js' | relative_url }}?v=3"></script>
+<script type="module" src="{{ '/assets/js/arena.js' | relative_url }}?v=4"></script>

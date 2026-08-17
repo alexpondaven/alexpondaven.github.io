@@ -22,7 +22,7 @@
     <button id="chase-premo" class="chase-action-btn">Hold for Premonition</button>
   </div>
 
-  <p class="chase-status">Model status: <span id="chase-status">loading…</span></p>
+  <p class="chase-status"><span id="chase-status">loading…</span></p>
 </div>
 
 <style>
@@ -106,4 +106,4 @@
 {% unless include.skip_map %}<script type="importmap">
   { "imports": { "three": "{{ '/assets/js/vendor/three.module.min.js' | relative_url }}" } }
 </script>{% endunless %}
-<script type="module" src="{{ '/assets/js/chase.js' | relative_url }}?v=1"></script>
+<script type="module" src="{{ '/assets/js/chase.js' | relative_url }}?v=2"></script>

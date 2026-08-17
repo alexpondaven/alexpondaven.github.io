@@ -2,7 +2,7 @@
 layout: page
 permalink: /playground/
 title: Playground
-description: small games where everything that moves is a tiny neural net
+description: small games driven by tiny neural nets
 nav: true
 nav_order: 5
 ---
@@ -12,28 +12,28 @@ nav_order: 5
   { "imports": { "three": "{{ '/assets/js/vendor/three.module.min.js' | relative_url }}" } }
 </script>
 
-Everything that moves below is driven by neural nets with a few thousand parameters, trained with [hand-rolled backprop](https://github.com/alexpondaven/alexpondaven.github.io/tree/master/assets/worldmodel) in plain JavaScript. No physics engines, no scripted AI.
+Small games. Everything that moves is pushed around by neural nets with a few thousand parameters each, trained in plain JavaScript ([code](https://github.com/alexpondaven/alexpondaven.github.io/tree/master/assets/worldmodel)). No physics engine, no game AI.
 
 #### World model
 
-A ball you can drive (WASD / arrows), simulated entirely by a 2.3k-param net. Toggle ground truth to see how far it drifts from real physics.
+Drive the ball with WASD or the arrows. A small net predicts all the physics. "Show ground truth" overlays the real simulation so you can see where the model drifts.
 
 {% include worldmodel.html %}
 
 #### Arena
 
-Push crates into the ring. All the physics — collisions, bounces, friction — is two nets. Autopilot is a 460-param policy trained inside the world model.
+Push the crates into the ring. The collisions are learned, not simulated. Autopilot plays it with a policy trained inside the model.
 
 {% include arena.html skip_map=true %}
 
 #### Colony
 
-Creatures that hatch from the paragraph's letters, eat more letters until they spell a word, then fly. Click the masked one when it steals.
+The paragraph is alive. Letters hatch, eat other letters, turn into words, fly for a while, then put themselves back.
 
 {% include colony.html %}
 
 #### Chase
 
-The red thing has no AI — it plans by imagining futures through the same nets that run the game. The threads are its thoughts. Hold Shift to see yours.
+The red one picks its moves by simulating futures with the same nets that run the game. The threads on the floor are the futures it considered. Hold shift to see your own.
 
 {% include chase.html skip_map=true %}

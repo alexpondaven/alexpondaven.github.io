@@ -327,7 +327,7 @@ async function init() {
 
   if (statusEl) {
     const p = (n) => n.W1.length + n.b1.length + n.W2.length + n.b2.length;
-    statusEl.textContent = `loaded — ball net ${p(weights.ball).toLocaleString()} params, crate net ${p(weights.crate).toLocaleString()} params, no physics engine`;
+    statusEl.textContent = `two nets, ${(p(weights.ball) + p(weights.crate)).toLocaleString()} parameters`;
   }
 
   // --- loop: model at 20Hz, render at rAF ---------------------------------

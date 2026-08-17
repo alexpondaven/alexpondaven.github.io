@@ -351,7 +351,7 @@ async function init() {
 
   if (statusEl) {
     const p = (n) => n.W1.length + n.b1.length + n.W2.length + n.b2.length;
-    statusEl.textContent = `loaded — player net ${p(weights.player).toLocaleString()} params, hunter net ${p(weights.hunter).toLocaleString()} params · no physics engine, no scripted AI: the hunter searches these nets`;
+    statusEl.textContent = `two nets, ${(p(weights.player) + p(weights.hunter)).toLocaleString()} parameters`;
   }
 
   // --- loop --------------------------------------------------------------------
