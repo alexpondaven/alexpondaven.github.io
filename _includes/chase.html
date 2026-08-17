@@ -103,7 +103,7 @@
 </style>
 
 <!-- three.js is vendored (assets/js/vendor/, MIT — see THREE_LICENSE) -->
-<script type="importmap">
+{% unless include.skip_map %}<script type="importmap">
   { "imports": { "three": "{{ '/assets/js/vendor/three.module.min.js' | relative_url }}" } }
-</script>
+</script>{% endunless %}
 <script type="module" src="{{ '/assets/js/chase.js' | relative_url }}?v=1"></script>

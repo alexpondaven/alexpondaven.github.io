@@ -3,7 +3,7 @@ layout: page
 permalink: /arena/
 title: Arena
 description: A 3D mini-game where every movement is neural-net output
-nav: true
+nav: false
 nav_order: 5
 ---
 <!-- _pages/arena.md -->

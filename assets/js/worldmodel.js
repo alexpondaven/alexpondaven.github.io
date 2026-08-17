@@ -352,7 +352,16 @@
     requestAnimationFrame(tick);
   }
 
-  document.addEventListener('visibilitychange', () => { running = !document.hidden; });
+  let wmVisible = true, wmOnscreen = true;
+  const wmUpdateRunning = () => { running = wmVisible && wmOnscreen; };
+  document.addEventListener('visibilitychange', () => { wmVisible = !document.hidden; wmUpdateRunning(); });
+  // several games share one page — sleep whenever scrolled out of view
+  if ('IntersectionObserver' in window) {
+    new IntersectionObserver((es) => {
+      for (const en of es) wmOnscreen = en.isIntersecting;
+      wmUpdateRunning();
+    }, { threshold: 0.02 }).observe(canvas);
+  }
 
   window.addEventListener('resize', resize);
 

@@ -3,7 +3,7 @@ layout: page
 permalink: /colony/
 title: Colony
 description: Creatures whose whole life cycle is made of text
-nav: true
+nav: false
 nav_order: 6
 ---
 <!-- _pages/colony.md -->

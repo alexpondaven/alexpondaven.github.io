@@ -356,8 +356,17 @@ async function init() {
 
   // --- loop --------------------------------------------------------------------
   const STEP_MS = 50;
-  let last = 0, running = true;
-  document.addEventListener('visibilitychange', () => { running = !document.hidden; });
+  let last = 0, visible = true, onscreen = true;
+  let running = true;
+  const updateRunning = () => { running = visible && onscreen; };
+  document.addEventListener('visibilitychange', () => { visible = !document.hidden; updateRunning(); });
+  // several games share one page — sleep whenever scrolled out of view
+  if ('IntersectionObserver' in window) {
+    new IntersectionObserver((es) => {
+      for (const en of es) onscreen = en.isIntersecting;
+      updateRunning();
+    }, { threshold: 0.02 }).observe(canvas);
+  }
   function frame(now) {
     if (running) {
       if (now - last >= STEP_MS) { last = now; stepGame(); }

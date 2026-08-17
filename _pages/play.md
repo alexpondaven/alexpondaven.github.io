@@ -3,7 +3,7 @@ layout: page
 permalink: /play/
 title: Play
 description: A tiny neural world model, running entirely in your browser
-nav: true
+nav: false
 nav_order: 4
 ---
 <!-- _pages/play.md -->

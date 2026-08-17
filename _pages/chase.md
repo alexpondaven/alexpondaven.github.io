@@ -3,7 +3,7 @@ layout: page
 permalink: /chase/
 title: Chase
 description: A hunter with no AI — it plans by imagining futures in a world model
-nav: true
+nav: false
 nav_order: 7
 ---
 <!-- _pages/chase.md -->
