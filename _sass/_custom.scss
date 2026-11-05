@@ -49,6 +49,16 @@
   .hero-canvas-wrap .hero-hint { font-size: 0.66rem; }
 }
 
+/* ---- Profile photo on phones ------------------------------------------ */
+/* al-folio makes it full-width below 576px, which fills the whole screen.
+   Keep it floated beside the intro instead, like on desktop. */
+@media (max-width: 575.98px) {
+  .profile {
+    width: 42%;
+    margin-bottom: 0.5rem;
+  }
+}
+
 /* ---- Homepage highlights ----------------------------------------------- */
 .about-highlights {
   margin: 1.4rem 0 1.6rem;

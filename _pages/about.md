@@ -16,11 +16,11 @@ social: true  # includes social icons at the bottom of the page
 # USEFUL GUIDE: https://kramdown.gettalong.org/quickref.html
 ---
 
-{% include hero_canvas.html %}
-
 I'm a PhD student at Oxford's [Torr Vision Group](https://torrvision.com/index.html), working on **controllable and interactive video generation** — teaching world models to be steered, and even *played*.
 
 Right now I'm a research intern at [Odyssey](https://odyssey.ml/), building **multiplayer world models**: generative environments that many players can act in at once. My recent paper [**ActionParty**](https://action-party.github.io/) (ECCV 2026) is a step towards this — the first video world model that binds distinct actions to up to seven players in a scene.
+
+{% include hero_canvas.html %}
 
 <div class="about-highlights" markdown="1">
 

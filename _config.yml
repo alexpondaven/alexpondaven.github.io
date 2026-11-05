@@ -232,8 +232,11 @@ filtered_bibtex_keywords: [abbr, abstract, arxiv, bibtex_show, html, pdf, select
 # Responsive WebP Images
 # -----------------------------------------------------------------------------
 
+# Disabled: the deploy runner has no ImageMagick, so the -480/-800/-1400.webp
+# variants were never generated and <picture> pointed browsers at 404s.
+# Install ImageMagick in .github/workflows/deploy.yml before re-enabling.
 imagemagick:
-  enabled: true
+  enabled: false
   widths:
     - 480
     - 800
